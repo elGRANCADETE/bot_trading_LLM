@@ -1,0 +1,37 @@
+# .gitignore actualizado
+
+# Entornos virtuales y entornos Python
+venv/
+.env/
+.venv/
+env/
+
+# Archivos de entorno
+.env
+*.env.local
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# VS Code
+.vscode/
+!.vscode/settings.json  # Excepto este archivo de configuración
+
+# Archivos de construcción y distribución
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de logs y bases de datos
+*.log
+*.sqlite
+
+# Archivos específicos del proyecto
+/data_collector/requirements.txt  # Eliminar este archivo (explicación abajo)
