@@ -1,0 +1,41 @@
+from binance.client import Client
+import os
+from dotenv import load_dotenv
+import logging
+
+# Configuración básica de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Cargar variables de entorno
+load_dotenv()
+
+# Obtener claves API desde las variables de entorno
+binance_api_key = os.getenv("BINANCE_API_KEY")
+binance_api_secret = os.getenv("BINANCE_API_SECRET")
+
+# Configurar cliente para Testnet
+client = Client(binance_api_key, binance_api_secret, testnet=True)
+
+# Prueba de conectividad al sistema de Binance sin autenticación
+try:
+    status = client.get_system_status()
+    print("Estado del sistema:", status)
+except Exception as e:
+    logging.error(f"Error al conectar con el sistema de Binance Testnet: {e}")
+
+# Intentar obtener el balance de la cuenta como prueba de permisos
+try:
+    balance = client.get_asset_balance(asset='USDT')
+    print("Balance de USDT:", balance)
+except Exception as e:
+    logging.error(f"Error al obtener el balance de USDT en Binance Testnet: {e}")
+
+# Intentar realizar una orden de compra pequeña
+try:
+    order = client.order_market_buy(
+        symbol="BTCUSDT",
+        quantity=0.001  # Pequeña cantidad para probar la ejecución
+    )
+    print("Orden de compra ejecutada:", order)
+except Exception as e:
+    logging.error(f"Error al ejecutar la orden de compra en Binance Testnet: {e}")
