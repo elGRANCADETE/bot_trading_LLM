@@ -32,6 +32,3 @@ Thumbs.db
 # Archivos de logs y bases de datos
 *.log
 *.sqlite
-
-# Archivos específicos del proyecto
-/data_collector/requirements.txt  # Eliminar este archivo (explicación abajo)
