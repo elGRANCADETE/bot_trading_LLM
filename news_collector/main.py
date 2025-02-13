@@ -106,5 +106,5 @@ def obtener_informe_bitcoin_completo() -> str:
 # Si quieres probarlo directamente:
 if __name__ == "__main__":
     informe = run_news_collector()
-    print("=== INFORME DETALLADO SOBRE BITCOIN (CRUDO) ===")
+    print("=== INFORME DETALLADO SOBRE BITCOIN ===")
     print(informe)
