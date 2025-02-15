@@ -6,64 +6,81 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-perplexity_api_key = os.getenv("AI_NEWS_API_KEY")  # Ajusta tu variable de entorno
+perplexity_api_key = os.getenv("AI_NEWS_API_KEY")  # Adjust your environment variable
 PERPLEXITY_BASE_URL = "https://api.perplexity.ai"
 
 def run_news_collector() -> str:
     """
-    Devuelve un único string con todo el informe (5 secciones y SENTIMIENTO DE MERCADO ACTUAL)
-    en una sola llamada a la API de Perplexity, sin separar nada.
+    Returns a single string containing the entire report (5 sections and CURRENT MARKET SENTIMENT)
+    in one call to the Perplexity API, without splitting anything.
     """
-    return obtener_informe_bitcoin_completo()
+    return get_complete_bitcoin_report()
 
-def obtener_informe_bitcoin_completo() -> str:
+def get_complete_bitcoin_report() -> str:
     """
-    Llama a Perplexity para obtener un informe extenso:
-      - 5 secciones (Último año, 5 meses, 1 mes, 1 semana, 24 horas)
-      - Bloque final de 'SENTIMIENTO DE MERCADO ACTUAL'
-    Todo junto, sin análisis técnico ni referencias, y separado por líneas de guiones.
+    Calls Perplexity to obtain an extensive report:
+      - 5 sections: LAST YEAR, LAST 5 MONTHS, LAST MONTH, LAST WEEK, LAST 24 HOURS
+      - A final block titled "CURRENT MARKET SENTIMENT"
+    
+    The report should be provided in plain text (without markdown symbols, links, or numerical references),
+    with each section clearly separated by a line of dashes.
+    
+    Example format:
+    -----------------------------------------------------------------
+    PERIOD: LAST YEAR
+    (Detailed text about political decisions, regulations, institutional adoption,
+    macroeconomic events, involvement of key figures, etc.)
+    -----------------------------------------------------------------
+    PERIOD: LAST 5 MONTHS
+    (Detailed text...)
+    -----------------------------------------------------------------
+    PERIOD: LAST MONTH
+    (Detailed text...)
+    -----------------------------------------------------------------
+    PERIOD: LAST WEEK
+    (Detailed text...)
+    -----------------------------------------------------------------
+    PERIOD: LAST 24 HOURS
+    (Detailed text...)
+    -----------------------------------------------------------------
+    CURRENT MARKET SENTIMENT:
+    (Clearly indicate Bullish, Neutral, or Bearish, with brief reasons.)
+    
+    Please do NOT include references like [#] or web links, and avoid technical analysis
+    such as support/resistance levels or numerical price projections.
     """
-    pregunta = (
-        "Elabora un informe MUY extenso sobre Bitcoin que abarque 5 secciones bien diferenciadas:\n\n"
-        "1) ÚLTIMO AÑO\n"
-        "2) ÚLTIMOS 5 MESES\n"
-        "3) ÚLTIMO MES\n"
-        "4) ÚLTIMA SEMANA\n"
-        "5) ÚLTIMAS 24 HORAS\n\n"
-
-        "FORMATO DESEADO (texto plano, sin enlaces, sin referencias como [1], [2], etc.):\n"
+    question = (
+        "Prepare a VERY extensive report on Bitcoin covering 5 clearly defined sections:\n\n"
+        "1) LAST YEAR\n"
+        "2) LAST 5 MONTHS\n"
+        "3) LAST MONTH\n"
+        "4) LAST WEEK\n"
+        "5) LAST 24 HOURS\n\n"
+        "DESIRED FORMAT (plain text, without links, without references like [1], [2], etc.):\n"
         "-----------------------------------------------------------------\n"
-        "PERIODO: ÚLTIMO AÑO\n"
-        "(Texto detallado sobre decisiones políticas, regulaciones, adopción institucional, "
-        "eventos macroeconómicos, participación de figuras relevantes, etc.)\n"
+        "PERIOD: LAST YEAR\n"
+        "(Detailed text about political decisions, regulations, institutional adoption, "
+        "macroeconomic events, involvement of key figures, etc.)\n"
         "-----------------------------------------------------------------\n"
-        "PERIODO: ÚLTIMOS 5 MESES\n"
-        "(Texto detallado...)\n"
+        "PERIOD: LAST 5 MONTHS\n"
+        "(Detailed text...)\n"
         "-----------------------------------------------------------------\n"
-        "PERIODO: ÚLTIMO MES\n"
-        "(Texto detallado...)\n"
+        "PERIOD: LAST MONTH\n"
+        "(Detailed text...)\n"
         "-----------------------------------------------------------------\n"
-        "PERIODO: ÚLTIMA SEMANA\n"
-        "(Texto detallado...)\n"
+        "PERIOD: LAST WEEK\n"
+        "(Detailed text...)\n"
         "-----------------------------------------------------------------\n"
-        "PERIODO: ÚLTIMAS 24 HORAS\n"
-        "(Texto detallado...)\n"
+        "PERIOD: LAST 24 HOURS\n"
+        "(Detailed text...)\n"
         "-----------------------------------------------------------------\n\n"
-        "Por favor, NO incluyas referencias del tipo [#], NO incluyas enlaces web. "
-        "Evita el análisis técnico (soportes, resistencias, proyecciones numéricas del precio). "
-        "Céntrate en noticias, decisiones políticas, regulaciones, adopción, eventos macroeconómicos, "
-        "figuras relevantes (p. ej. líderes mundiales, SEC, grandes empresas como BlackRock), etc.\n"
-        "No mezcles los periodos. Al final de cada sección, escribe la línea de "
-        "guiones para separarla tal cual '-----------------------------------------------------------------'.\n\n"
-
-        "Finalmente, tras la última sección (ÚLTIMAS 24 HORAS), añade un bloque llamado:\n"
-        "SENTIMIENTO DE MERCADO ACTUAL\n\n"
-        "En ese bloque, indica con claridad si el sentimiento general es Alcista, Neutro o Bajista, y justifica en pocas líneas las razones principales. "
-        "Por ejemplo:\n"
-        "SENTIMIENTO DE MERCADO ACTUAL: Alcista\n"
-        "Razones: ...\n\n"
-
-        "Entrega todo en texto plano sin símbolos de Markdown (*, #, etc.)."
+        "Finally, after the last section (LAST 24 HOURS), add a block titled:\n"
+        "CURRENT MARKET SENTIMENT\n\n"
+        "In that block, clearly state whether the overall sentiment is Bullish, Neutral, or Bearish, "
+        "and briefly justify the main reasons (for example:\n"
+        "CURRENT MARKET SENTIMENT: Bullish\n"
+        "Reasons: ...).\n\n"
+        "Provide everything in plain text without markdown symbols (*, #, etc.)."
     )
 
     headers = {
@@ -72,20 +89,19 @@ def obtener_informe_bitcoin_completo() -> str:
     }
     
     data = {
-        "model": "sonar-pro",  # o el que corresponda a tu plan
+        "model": "sonar",  # or the model corresponding to your plan
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "Sigue las instrucciones al pie de la letra: "
-                    "no incluyas enlaces ni referencias numeradas, "
-                    "usa las secciones solicitadas y la línea de guiones como separador, "
-                    "y por último añade el bloque SENTIMIENTO DE MERCADO ACTUAL."
+                    "Follow the instructions exactly: do not include links or numbered references, "
+                    "use the requested sections and the dash line as a separator, "
+                    "and finally add the block CURRENT MARKET SENTIMENT."
                 )
             },
             {
                 "role": "user",
-                "content": pregunta
+                "content": question
             }
         ]
     }
@@ -97,14 +113,14 @@ def obtener_informe_bitcoin_completo() -> str:
             headers=headers
         )
         resp.raise_for_status()
-        respuesta_json = resp.json()
-        contenido = respuesta_json["choices"][0]["message"]["content"].strip()
-        return contenido
+        response_json = resp.json()
+        content = response_json["choices"][0]["message"]["content"].strip()
+        return content
     except requests.exceptions.RequestException as e:
-        return f"Error al conectar con la API de Perplexity: {e}"
+        return f"Error connecting to the Perplexity API: {e}"
 
-# Si quieres probarlo directamente:
+# For direct testing:
 if __name__ == "__main__":
-    informe = run_news_collector()
-    print("=== INFORME DETALLADO SOBRE BITCOIN ===")
-    print(informe)
+    report = run_news_collector()
+    print("=== DETAILED BITCOIN REPORT ===")
+    print(report)

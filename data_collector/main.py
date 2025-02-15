@@ -22,7 +22,7 @@ def get_data(exchange):
     Returns:
         Tuple[pd.DataFrame, float, pd.Series]: OHLCV DataFrame, current price, today's data.
     """
-    df = data_fetcher.get_ohlcv_data(exchange, timeframe='12h', days=200)  # Adjust frequency as needed
+    df = data_fetcher.get_ohlcv_data(exchange, timeframe='4h', days=200)  # Adjust frequency as needed
     if df.empty or len(df) < 2:
         logging.error("Failed to retrieve OHLCV data. Terminating execution.")
         raise ValueError("Insufficient OHLCV data.")
@@ -51,7 +51,7 @@ def compile_data(df, current_price, today_data, wallet_balance):
     # Metadata and Wallet Information
     compiled_data['metadata'] = {
         "source": "Binance",
-        "frequency": "12 hours",
+        "frequency": "4 hours",
         "generation_date": datetime.now(timezone.utc).isoformat()
     }
     compiled_data['wallet'] = {

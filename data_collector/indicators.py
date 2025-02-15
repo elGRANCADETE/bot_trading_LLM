@@ -17,7 +17,7 @@ def get_moving_averages(df: pd.DataFrame) -> Dict[str, float]:
     Returns:
         Dict[str, float]: Dictionary containing moving averages values.
     """
-    candles_per_day = 2  # 12h timeframe
+    candles_per_day = 6  # 4h timeframe
 
     # Exclude the last candle (possibly incomplete)
     df_complete = df.iloc[:-1]
