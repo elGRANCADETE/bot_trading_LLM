@@ -3,7 +3,7 @@
 import pandas as pd
 import json
 import logging
-from . import data_fetcher, analysis
+from . import data_fetcher, analysis, indicators
 
 from typing import Dict, List, Any, Tuple
 
@@ -16,8 +16,7 @@ def get_real_time_data(today_data: pd.Series, current_price: float) -> Dict[str,
     low_usd = min(today_data['low'], current_price)
     
     return {
-        "timestamp": today_data['timestamp'].isoformat(),  # Incluye fecha y hora
-        "date": today_data['timestamp'].date().isoformat(),
+        "timestamp": today_data['timestamp'].isoformat(),
         "opening_price_usd": round(today_data['open'], 2),
         "current_price_usd": round(current_price, 2),
         "high_usd": round(high_usd, 2),
@@ -33,7 +32,7 @@ def get_historical_data(df: pd.DataFrame, specific_days: List[int], current_pric
     historical_prices = [
         {
             "days_ago": days,
-            "date": day_data['date'].isoformat(),
+            "date": day_data['date'],
             "opening_price_usd": day_data['open'],
             "closing_price_usd": day_data['close'],
             "high_usd": day_data['high'],
@@ -321,3 +320,120 @@ def validate_json_structure(data: dict) -> bool:
     except json.JSONDecodeError as e:
         logging.error(f"JSON validation error: {e}")
         return False
+
+def get_custom_moving_averages(df: pd.DataFrame, windows: Dict[str, int]) -> Dict[str, float]:
+    """
+    Calculates custom moving averages for specified window sizes.
+    
+    Parameters:
+        df (pd.DataFrame): DataFrame with 'close' prices. It excludes the last (possibly incomplete) candle.
+        windows (Dict[str, int]): Dictionary where keys are labels (e.g., "5d" or "5w") and values are the window sizes.
+    
+    Returns:
+        Dict[str, float]: Dictionary containing SMA and EMA values for each specified window.
+                           For example: {'sma_5d': value, 'ema_5d': value, ...}
+    """
+    df_complete = df.iloc[:-1]  # Exclude the last candle
+    averages = {}
+    for label, window in windows.items():
+        averages[f"sma_{label}"] = round(df_complete['close'].rolling(window=window).mean().iloc[-1], 4)
+        averages[f"ema_{label}"] = round(df_complete['close'].ewm(span=window, adjust=False).mean().iloc[-1], 4)
+    return averages
+
+def get_multi_timeframe_analysis(exchange) -> Dict[str, Any]:
+    """
+    Retrieves multi-timeframe analysis for daily and weekly data.
+
+    For daily analysis, two requests are made (using 201 and 401 days) to ensure a sufficient number
+    of complete daily candles (at least 200 after dropping an incomplete candle). For weekly analysis,
+    we require at least 50 weekly candles. If the first call does not yield 50 weeks, an additional
+    API call is performed to fetch extra weekly data. Custom moving averages are then calculated using
+    window sizes expressed in weeks (e.g. 5w, 20w, 50w).
+
+    Parameters:
+        exchange: Binance connection object via ccxt.
+
+    Returns:
+        Dict[str, Any]: A dictionary with two sections:
+            - "daily_analysis": Technical analysis based on daily candles.
+            - "weekly_analysis": Technical analysis based on weekly candles.
+    """
+    analysis_result = {}
+
+    # DAILY ANALYSIS
+    try:
+        # Request 1: Get recent daily data (last 201 days)
+        daily_df_recent = data_fetcher.get_ohlcv_data(exchange, timeframe='1d', days=201)
+        # Request 2: Get full daily data from the last 401 days (to ensure >200 complete candles)
+        daily_df_full = data_fetcher.get_ohlcv_data(exchange, timeframe='1d', days=401)
+        # Filter out older data not present in the recent dataset
+        cutoff = daily_df_recent['timestamp'].min()
+        daily_df_older = daily_df_full[daily_df_full['timestamp'] < cutoff]
+        # Combine both datasets and sort chronologically
+        daily_df = pd.concat([daily_df_recent, daily_df_older]).sort_values('timestamp').reset_index(drop=True)
+        
+        if len(daily_df) < 200:
+            logging.warning(f"Daily data has only {len(daily_df)} rows, which is less than 200 complete candles.")
+
+        # Calculate daily moving averages with windows expressed in days
+        daily_ma = get_custom_moving_averages(daily_df, {"5d": 5, "50d": 50, "200d": 200})
+        daily_trend = {
+            "moving_averages": daily_ma,
+            "macd": indicators.get_macd(daily_df),
+            "adx": indicators.get_adx(daily_df)
+        }
+        daily_momentum = {
+            "rsi": indicators.get_rsi(daily_df),
+            "stochastic": indicators.get_stochastic(daily_df)
+        }
+        daily_volatility = {
+            "atr": indicators.get_atr(daily_df),
+            "bollinger_bands": indicators.get_bollinger_bands(daily_df),
+            "volatility_index": indicators.get_volatility_index(daily_df)
+        }
+        analysis_result["daily_analysis"] = {
+            "trend": daily_trend,
+            "momentum": daily_momentum,
+            "volatility": daily_volatility
+        }
+    except Exception as e:
+        logging.error(f"Error in daily multi-timeframe analysis: {e}")
+        analysis_result["daily_analysis"] = {}
+
+    # WEEKLY ANALYSIS
+    try:
+        required_weeks = 50
+        # First, attempt to fetch weekly data for ~50 weeks (350 days)
+        weekly_df = data_fetcher.get_ohlcv_data(exchange, timeframe='1w', days=350)
+        if len(weekly_df) < required_weeks:
+            logging.warning(f"Weekly data has only {len(weekly_df)} rows, which is less than the required {required_weeks} weeks. Fetching additional weekly data.")
+            # Fetch extra weekly data from further back (using 50*2=100 weeks ~700 days)
+            extra_weekly_df = data_fetcher.get_ohlcv_data(exchange, timeframe='1w', days=700)
+            # Combine both sets, remove duplicates and sort chronologically
+            weekly_df = pd.concat([weekly_df, extra_weekly_df]).drop_duplicates(subset='timestamp').sort_values('timestamp').reset_index(drop=True)
+        # Calculate weekly moving averages with window sizes expressed in weeks
+        weekly_ma = get_custom_moving_averages(weekly_df, {"5w": 5, "20w": 20, "50w": 50})
+        weekly_trend = {
+            "moving_averages": weekly_ma,
+            "macd": indicators.get_macd(weekly_df),
+            "adx": indicators.get_adx(weekly_df)
+        }
+        weekly_momentum = {
+            "rsi": indicators.get_rsi(weekly_df),
+            "stochastic": indicators.get_stochastic(weekly_df)
+        }
+        weekly_volatility = {
+            "atr": indicators.get_atr(weekly_df),
+            "bollinger_bands": indicators.get_bollinger_bands(weekly_df),
+            "volatility_index": indicators.get_volatility_index(weekly_df)
+        }
+        analysis_result["weekly_analysis"] = {
+            "trend": weekly_trend,
+            "momentum": weekly_momentum,
+            "volatility": weekly_volatility
+        }
+    except Exception as e:
+        logging.error(f"Error in weekly multi-timeframe analysis: {e}")
+        analysis_result["weekly_analysis"] = {}
+
+    return analysis_result

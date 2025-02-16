@@ -97,8 +97,10 @@ def detect_candle_patterns(df: pd.DataFrame) -> List[Dict[str, Any]]:
                 description = f"{pattern_type} {pattern_name} pattern detected."
                 patterns.append({
                     "pattern_name": pattern_name,
-                    "date": df['timestamp'].iloc[-1].date().isoformat(),
-                    "description": description
+                    "timestamp": df['timestamp'].iloc[-1].isoformat(),
+                    "description": description,
+                    "pattern_value": pattern_value,
+                    "details": f"El patrón {pattern_name} se detectó con un valor de {pattern_value}, lo que sugiere una señal {pattern_type.lower()} según TA-Lib."
                 })
         except AttributeError:
             logging.warning(f"Pattern {pattern_func} not found in TA-Lib.")
@@ -127,20 +129,35 @@ def detect_tweezer_patterns(df: pd.DataFrame) -> List[Dict[str, Any]]:
     candle2 = df.iloc[-1]
     # Detect Tweezer Tops
     avg_high = (candle1['high'] + candle2['high']) / 2
-    if abs(candle1['high'] - candle2['high']) / avg_high < 0.002:
+    high_diff = abs(candle1['high'] - candle2['high'])
+    if high_diff / avg_high < 0.002:
         custom_patterns.append({
             "pattern_name": "Tweezer Tops",
-            "date": candle2['timestamp'].date().isoformat(),
-            "description": "Tweezer Tops pattern detected."
+            "timestamp": candle2['timestamp'].isoformat(),
+            "description": "Tweezer Tops pattern detected.",
+            "details": {
+                "high_difference": round(high_diff, 4),
+                "average_high": round(avg_high, 4),
+                "threshold": 0.002,
+                "info": f"La diferencia entre los máximos es de {round(high_diff/avg_high*100,2)}%, inferior al umbral del 0.2%."
+            }
         })
     # Detect Tweezer Bottoms
     avg_low = (candle1['low'] + candle2['low']) / 2
-    if abs(candle1['low'] - candle2['low']) / avg_low < 0.002:
+    low_diff = abs(candle1['low'] - candle2['low'])
+    if low_diff / avg_low < 0.002:
         custom_patterns.append({
             "pattern_name": "Tweezer Bottoms",
-            "date": candle2['timestamp'].date().isoformat(),
-            "description": "Tweezer Bottoms pattern detected."
+            "timestamp": candle2['timestamp'].isoformat(),
+            "description": "Tweezer Bottoms pattern detected.",
+            "details": {
+                "low_difference": round(low_diff, 4),
+                "average_low": round(avg_low, 4),
+                "threshold": 0.002,
+                "info": f"La diferencia entre los mínimos es de {round(low_diff/avg_low*100,2)}%, inferior al umbral del 0.2%."
+            }
         })
+
     return custom_patterns
 
 def compile_additional_indicators(df: pd.DataFrame, compiled_data: Dict[str, Any]) -> None:

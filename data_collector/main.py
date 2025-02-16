@@ -203,6 +203,9 @@ def run_data_collector() -> str:
         df, current_price, today_data = get_data(exchange)
         compiled_data = compile_data(df, current_price, today_data, wallet_balance)
 
+        compiled_data['multi_timeframe_analysis'] = output.get_multi_timeframe_analysis(exchange)
+
+
         # Generar el JSON
         output_json = output.generate_output_json(compiled_data)
         return output_json

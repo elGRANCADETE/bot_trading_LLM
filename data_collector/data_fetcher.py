@@ -1,4 +1,4 @@
-# # tfgBotTrading/data_collector/data_fetcher.py
+#tfgBotTrading/data_collector/data_fetcher.py
 
 import pandas as pd
 import logging
@@ -8,20 +8,31 @@ from typing import Any, Optional, Dict
 
 def get_ohlcv_data(exchange, symbol: str = 'BTC/USDT', timeframe: str = '4h', days: int = 200) -> pd.DataFrame:
     """
-    Obtiene datos OHLCV para un timeframe de 4h y 200 días (6 velas/día).
-    Debido a que Binance limita la cantidad de datos por consulta (por ejemplo, 1000),
-    se realizan varias solicitudes (paginación) para alcanzar las ~1200 velas necesarias.
+    Obtiene datos OHLCV para un timeframe dado y un número de días.
+    Se solicita un candle adicional para asegurar que, en caso de que el último esté incompleto,
+    se pueda eliminar y aún así tener suficientes datos completos.
+    Además, se filtran los candles con valores faltantes o nulos en 'open', 'high', 'low', 'close' y 'volume'.
     """
-    candles_per_day = 6
-    expected_candles = (days + 1) * candles_per_day  # Se suma 1 para asegurar cubrir el periodo completo
+    # Duración del candle según el timeframe
+    timeframe_durations = {
+        "4h": timedelta(hours=4),
+        "1d": timedelta(days=1),
+        "1w": timedelta(weeks=1)
+    }
+    duration = timeframe_durations.get(timeframe, timedelta(hours=4))
+    
+    # Número de candles por día según el timeframe (por ejemplo, 4h son 6 candles por día)
+    candles_per_day = {"4h": 6, "1d": 1, "1w": 1}.get(timeframe, 6)
+    
+    # Se solicita un candle extra: si el último está incompleto se elimina y aún quedan suficientes completos.
+    expected_candles = (days + 1) * candles_per_day + 1
+
     all_ohlcv = []
-    now = datetime.now(timezone.utc)
-    # Calculamos el timestamp inicial (desde 201 días atrás para tener un margen)
+    now = datetime.now(timezone.utc)  # Aseguramos que 'now' es aware (UTC)
     since = exchange.parse8601((now - timedelta(days=days + 1)).isoformat())
 
     while True:
         try:
-            # Usamos un límite máximo (p.ej. 1000) para cada solicitud
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1000)
         except Exception as e:
             logging.error(f"Error fetching OHLCV: {e}")
@@ -31,31 +42,35 @@ def get_ohlcv_data(exchange, symbol: str = 'BTC/USDT', timeframe: str = '4h', da
             break
 
         all_ohlcv.extend(ohlcv)
-        # Si se obtuvo menos de 1000 velas, es que no hay más datos disponibles
         if len(ohlcv) < 1000:
             break
 
-        # Actualizamos 'since' para la siguiente iteración: tomamos el último timestamp + 1 ms
         since = ohlcv[-1][0] + 1
-
-        # Si ya hemos recogido suficientes velas, salimos del bucle
         if len(all_ohlcv) >= expected_candles:
             break
 
     if not all_ohlcv:
         return pd.DataFrame()  # Retorna un DataFrame vacío en caso de fallo
 
-    # Crear DataFrame, convertir timestamps y ordenar cronológicamente
     df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    # Convertir a datetime asegurando zona horaria UTC
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
     df = df.sort_values('timestamp').reset_index(drop=True)
 
-    # Si hay más velas de las esperadas, nos quedamos con las últimas (las más recientes)
+    # Si hay más candles de las esperadas, quedarse con los últimos
     if len(df) > expected_candles:
         df = df.iloc[-expected_candles:]
-    
-    # Eliminar la última vela por si está incompleta (opcional, según tu lógica)
-    df = df.iloc[:-1]
+
+    # Filtrar candles con valores faltantes o nulos en columnas críticas
+    df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume'])
+    df = df[(df['open'] != 0) & (df['high'] != 0) & (df['low'] != 0) & (df['close'] != 0)]
+
+    # Verificar si el último candle es completo (usando la duración esperada)
+    last_candle_time = df.iloc[-1]['timestamp']
+    if now < last_candle_time + duration:
+        # El último candle está incompleto, se elimina
+        df = df.iloc[:-1]
+
     return df
 
 def get_current_price(exchange, symbol: str = 'BTC/USDT') -> float:
@@ -109,7 +124,7 @@ def get_specific_day_data(df: pd.DataFrame, days_ago: int =1) -> Optional[Dict]:
     if len(df_clean) >= (days_ago * candles_per_day + 1):
         day_data = df_clean.iloc[target_index]
         return {
-            'date': day_data['timestamp'].date(),
+            'date': day_data['timestamp'].isoformat(),
             'open': round(day_data['open'], 2),
             'close': round(day_data['close'], 2),
             'high': round(day_data['high'], 2),
@@ -134,8 +149,8 @@ def get_period_data(df: pd.DataFrame, days: int = 30) -> Optional[Dict]:
     if len(df) >= days + 1:
         df_period = df.tail(days)
         return {
-            'start_date': df_period['timestamp'].iloc[0].date(),
-            'end_date': df_period['timestamp'].iloc[-1].date(),
+            'start_date': df_period['timestamp'].iloc[0].isoformat(),
+            'end_date': df_period['timestamp'].iloc[-1].isoformat(),
             'average_open': round(df_period['open'].mean(), 2),
             'average_close': round(df_period['close'].mean(), 2),
             'max_high': round(df_period['high'].max(), 2),

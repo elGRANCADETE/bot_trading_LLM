@@ -4,6 +4,19 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 
+tfgBotTrading is an automated trading system written in Python. It integrates technical analysis, news processing, and LLM-based decision-making models to execute trading orders across different strategies.
+
+
+## Disclaimer
+
+This software is provided for educational purposes only. Do not invest money that you cannot afford to lose. 
+USE IT AT YOUR OWN RISK. The author assume no responsibility for any losses incurred through trading activities.
+
+It is highly recommended that you have a solid understanding of Python programming and financial markets before using this bot with real money. 
+
+Always start in a simulation mode (Paper/Dry Run) and thoroughly understand how the bot works before risking actual capital.
+
+
 tfgBotTrading is an automated trading system that integrates technical analysis, news processing, and decision-making models based on LLMs to execute trading orders
 
 ## 🚀 **Tabla de Contenidos**

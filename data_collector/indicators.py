@@ -7,18 +7,19 @@ from .utils import helpers
 
 from typing import Any, Tuple, Dict
 
-def get_moving_averages(df: pd.DataFrame) -> Dict[str, float]:
+def get_moving_averages(df: pd.DataFrame, candles_per_day: int = 6) -> Dict[str, float]:
     """
-    Calculates Simple Moving Averages (SMA) and Exponential Moving Averages (EMA) for short, medium, and long periods using only complete candles.
+    Calculates Simple Moving Averages (SMA) and Exponential Moving Averages (EMA) for short, medium, 
+    and long periods using only complete candles. The parameter candles_per_day allows ajustar el tamaño de ventana
+    según el timeframe (por ejemplo, 6 para 4h, 1 para diario o semanal).
 
     Parameters:
         df (pd.DataFrame): DataFrame with 'close' prices.
+        candles_per_day (int): Number of candles per day for the given timeframe.
 
     Returns:
         Dict[str, float]: Dictionary containing moving averages values.
     """
-    candles_per_day = 6  # 4h timeframe
-
     # Exclude the last candle (possibly incomplete)
     df_complete = df.iloc[:-1]
     
