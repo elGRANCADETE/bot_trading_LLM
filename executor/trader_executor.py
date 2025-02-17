@@ -25,7 +25,6 @@ STRATEGY_REGISTRY: Dict[str, str] = {
 # Basic logger configuration
 logging.basicConfig(level=logging.INFO)
 
-
 def load_position_state() -> Optional[dict]:
     """
     Loads the trading position state from a JSON file.
@@ -42,7 +41,6 @@ def load_position_state() -> Optional[dict]:
         logging.error(f"Error loading position state: {e}")
         return None
 
-
 def save_position_state(position: dict) -> None:
     """
     Saves the current trading position state to a JSON file.
@@ -56,7 +54,6 @@ def save_position_state(position: dict) -> None:
         logging.info("Position state saved.")
     except Exception as e:
         logging.error(f"Error saving position state: {e}")
-
 
 def get_current_price_from_data(data_json: str) -> float:
     """
@@ -79,7 +76,6 @@ def get_current_price_from_data(data_json: str) -> float:
     except Exception as e:
         logging.warning(f"No valid current price found, fallback=40000. Error: {e}")
         return 40000.0
-
 
 def process_decision(decision: dict, data_json: str, current_pos: dict, client) -> dict:
     """

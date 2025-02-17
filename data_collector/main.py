@@ -11,16 +11,22 @@ from .analysis import calc_ichimoku_robust
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-
 def get_data(exchange):
     """
-    Retrieves market data and current prices.
-
+    Retrieve market data and current prices.
+    
+    This function fetches OHLCV data using a 4-hour timeframe for the past 200 days from the provided exchange.
+    It also retrieves the current price and selects today's data by excluding the last (potentially incomplete) candle.
+    Additionally, it logs the timestamp and volume of the selected candle.
+    
     Parameters:
         exchange: Binance connection object via ccxt.
-
+    
     Returns:
-        Tuple[pd.DataFrame, float, pd.Series]: OHLCV DataFrame, current price, today's data.
+        Tuple[pd.DataFrame, float, pd.Series]: A tuple containing:
+            - OHLCV DataFrame.
+            - Current asset price.
+            - Today's market data (as a Pandas Series).
     """
     df = data_fetcher.get_ohlcv_data(exchange, timeframe='4h', days=200)  # Adjust frequency as needed
     if df.empty or len(df) < 2:
@@ -29,22 +35,27 @@ def get_data(exchange):
     current_price = data_fetcher.get_current_price(exchange)
     # Exclude the last candle as it may be incomplete
     today_data = df.iloc[-2]
-    # Log both date and time
+    # Log both date and time along with volume
     logging.info(f"Using candle data with timestamp: {today_data['timestamp'].isoformat()} and volume: {today_data['volume']}")
     return df, current_price, today_data
 
 def compile_data(df, current_price, today_data, wallet_balance):
     """
-    Compiles all data and indicators into a dictionary.
-
+    Compile all market data and technical indicators into a structured dictionary.
+    
+    This function gathers metadata, wallet balances, real-time data, historical data, and various technical
+    indicators including trend, momentum, volatility, volume, additional indicators (such as Parabolic SAR, Ichimoku,
+    VWAP, CMF, and MACD Histogram), support/resistance levels, and candlestick patterns. It then generates trading
+    signals, interpretations, and an executive summary.
+    
     Parameters:
         df (pd.DataFrame): Market data DataFrame.
         current_price (float): Current asset price.
-        today_data (pd.Series): Series with today's data.
-        wallet_balance (dict): Dictionary with wallet balances.
-
+        today_data (pd.Series): Today's market data.
+        wallet_balance (dict): Dictionary containing wallet balances.
+    
     Returns:
-        dict: Compiled data dictionary.
+        dict: A compiled dictionary containing all metadata, indicators, patterns, and summaries.
     """
     compiled_data = {}
 
@@ -77,15 +88,14 @@ def compile_data(df, current_price, today_data, wallet_balance):
     macd = indicators.get_macd(df)
     adx = indicators.get_adx(df)
     indicators_dict['trend'] = output.get_trend_indicators(
-        moving_averages, comparisons, average_distance, macd, adx
+        moving_averages, comparisons, average_distance, macd, adx, reference_price
     )
-
     # ----------------------------
     # Add Momentum Indicators
     # ----------------------------
     rsi, rsi_normalized = indicators.get_rsi(df)
     (k_percent, k_percent_normalized), (d_percent, d_percent_normalized) = indicators.get_stochastic(df)
-    # Generate warnings based on RSI if desired (e.g., oversold/overbought)
+    # Generate warnings based on RSI if desired (e.g., oversold/overbought conditions)
     momentum_warnings = []
     if rsi > 70:
         momentum_warnings.append("RSI indicates overbought condition.")
@@ -111,14 +121,14 @@ def compile_data(df, current_price, today_data, wallet_balance):
     # ----------------------------
     obv_series = indicators.get_obv(df)
     current_volume = today_data['volume']
-    # Assuming you have a function to get average volume for given days
+    # Get average volumes for specific periods (days)
     volume_periods = [7, 14, 30, 90, 180]
     average_volumes = {period: data_fetcher.get_average_volume(df, days=period) for period in volume_periods}
     indicators_dict['volume'] = output.get_volume_indicators(
         obv_series, average_volumes, current_volume
     )
 
-    # Additional Indicators can be added similarly (e.g., Parabolic SAR, Ichimoku, VWAP, CMF, MACD Histogram)
+    # Additional Indicators (e.g., Parabolic SAR, Ichimoku, VWAP, CMF, MACD Histogram)
     additional_indicators = {
         'parabolic_sar_usd': {
             "value": indicators.get_parabolic_sar(df),
@@ -141,22 +151,21 @@ def compile_data(df, current_price, today_data, wallet_balance):
         }
     }
 
-        # Now, let's also compute the robust Ichimoku with displacement:
-    # we rename columns so that we have 'high','low','close' consistent.
-    # Or if your df already has those names, just pass it as is:
+    # Compute the robust Ichimoku with displacement:
+    # Rename columns to ensure consistency (i.e., 'high', 'low', 'close') if needed.
     robust_ichimoku_result = calc_ichimoku_robust(
         df.rename(columns={
-            "open":"open","high":"high","low":"low","close":"close"
+            "open": "open", "high": "high", "low": "low", "close": "close"
         }),
         tenkan_period=9,
         kijun_period=26,
         senkou_span_b_period=52,
         displacement=26
     )
-    # Store it under e.g. 'ichimoku_robust'
+    # Store the robust Ichimoku result under the key 'ichimoku_robust'
     additional_indicators["ichimoku_robust"] = robust_ichimoku_result
-    
-    # Merge additional indicators into the main dictionary
+
+    # Merge additional indicators into the main indicators dictionary
     indicators_dict.update(additional_indicators)
 
     # Set all indicators in the compiled data
@@ -190,34 +199,40 @@ def compile_data(df, current_price, today_data, wallet_balance):
 
 def run_data_collector() -> str:
     """
-    Función adicional que encapsula el proceso de data_collector
-    y devuelve el JSON final como un string, en vez de imprimirlo.
+    Encapsulate the data collection process and return the final JSON output as a string.
+    
+    This function connects to Binance, retrieves wallet and market data, compiles all indicators,
+    performs multi-timeframe analysis, and finally generates a JSON-formatted string. If any error occurs
+    during processing, an empty JSON "{}" is returned.
+    
+    Returns:
+        str: JSON-formatted string of the compiled data.
     """
     try:
-        # Conectarse a Binance
+        # Connect to Binance
         exchange = connect_binance_ccxt()
         client = connect_binance_wallet_testnet()
         wallet_balance = get_wallet_data(client)
 
-        # Obtener datos y compilar
+        # Retrieve and compile market data
         df, current_price, today_data = get_data(exchange)
         compiled_data = compile_data(df, current_price, today_data, wallet_balance)
 
         compiled_data['multi_timeframe_analysis'] = output.get_multi_timeframe_analysis(exchange)
 
-
-        # Generar el JSON
+        # Generate the final JSON output
         output_json = output.generate_output_json(compiled_data)
         return output_json
 
     except Exception as e:
-        logging.error(f"Error en run_data_collector: {e}")
-        return "{}"  # Retornar un JSON vacío en caso de fallo
+        logging.error(f"Error in run_data_collector: {e}")
+        return "{}"  # Return an empty JSON object in case of failure
 
 def run_program():
     """
-    Versión original que imprime.
-    Lo mantenemos por compatibilidad, si quieres seguir usándolo standalone.
+    Execute the program in standalone mode by printing the JSON output.
+    
+    This version is maintained for backward compatibility if you prefer to run the program as a standalone script.
     """
     output_str = run_data_collector()
     if output_str != "{}":

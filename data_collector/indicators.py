@@ -9,27 +9,23 @@ from typing import Any, Tuple, Dict
 
 def get_moving_averages(df: pd.DataFrame, candles_per_day: int = 6) -> Dict[str, float]:
     """
-    Calculates Simple Moving Averages (SMA) and Exponential Moving Averages (EMA) for short, medium, 
-    and long periods using only complete candles. The parameter candles_per_day allows ajustar el tamaño de ventana
-    según el timeframe (por ejemplo, 6 para 4h, 1 para diario o semanal).
-
-    Parameters:
-        df (pd.DataFrame): DataFrame with 'close' prices.
-        candles_per_day (int): Number of candles per day for the given timeframe.
+    Calculates Simple Moving Averages (SMA) and Exponential Moving Averages (EMA) for three periods using only complete candles.
+    The parameter `candles_per_day` allows adjusting the window size according to the timeframe (e.g., 6 for 4h, 1 for daily or weekly).
 
     Returns:
-        Dict[str, float]: Dictionary containing moving averages values.
+        Dict[str, float]: Dictionary containing moving averages values using standardized labels,
+                          e.g., {'sma_5d': value, 'ema_5d': value, 'sma_50d': value, 'ema_50d': value, 'sma_200d': value, 'ema_200d': value}
     """
     # Exclude the last candle (possibly incomplete)
     df_complete = df.iloc[:-1]
     
     moving_averages = {
-        'sma_short_5_days': round(df_complete['close'].rolling(window=5 * candles_per_day).mean().iloc[-1], 4),
-        'sma_medium_50_days': round(df_complete['close'].rolling(window=50 * candles_per_day).mean().iloc[-1], 4),
-        'sma_long_200_days': round(df_complete['close'].rolling(window=200 * candles_per_day).mean().iloc[-1], 4),
-        'ema_short_5_days': round(df_complete['close'].ewm(span=5 * candles_per_day, adjust=False).mean().iloc[-1], 4),
-        'ema_medium_50_days': round(df_complete['close'].ewm(span=50 * candles_per_day, adjust=False).mean().iloc[-1], 4),
-        'ema_long_200_days': round(df_complete['close'].ewm(span=200 * candles_per_day, adjust=False).mean().iloc[-1], 4),
+        'sma_5d': round(df_complete['close'].rolling(window=5 * candles_per_day).mean().iloc[-1], 4),
+        'sma_50d': round(df_complete['close'].rolling(window=50 * candles_per_day).mean().iloc[-1], 4),
+        'sma_200d': round(df_complete['close'].rolling(window=200 * candles_per_day).mean().iloc[-1], 4),
+        'ema_5d': round(df_complete['close'].ewm(span=5 * candles_per_day, adjust=False).mean().iloc[-1], 4),
+        'ema_50d': round(df_complete['close'].ewm(span=50 * candles_per_day, adjust=False).mean().iloc[-1], 4),
+        'ema_200d': round(df_complete['close'].ewm(span=200 * candles_per_day, adjust=False).mean().iloc[-1], 4),
     }
     return moving_averages
 
@@ -64,7 +60,20 @@ def get_macd(df: pd.DataFrame) -> Dict[str, float]:
         }
 
 def get_adx(df: pd.DataFrame, periods: int = 14) -> float:
-    """Calculates ADX using TA-Lib to assess trend strength."""
+    """
+    Calculate the Average Directional Index (ADX) to assess trend strength.
+    
+    This function uses TA-Lib's ADX function to compute the Average Directional Index (ADX) based on
+    the high, low, and close price data provided in the DataFrame. The ADX value indicates the strength
+    of a trend regardless of its direction. The result is rounded to two decimal places.
+    
+    Parameters:
+        df (pd.DataFrame): A DataFrame containing market data with 'high', 'low', and 'close' columns.
+        periods (int, optional): The time period over which to calculate the ADX. Defaults to 14.
+    
+    Returns:
+        float: The ADX value rounded to two decimal places. Returns 0.0 if an error occurs.
+    """
     try:
         adx = talib.ADX(df['high'], df['low'], df['close'], timeperiod=periods)
         adx_value = adx.iloc[-1]
@@ -74,7 +83,23 @@ def get_adx(df: pd.DataFrame, periods: int = 14) -> float:
         return 0.0
 
 def get_rsi(df: pd.DataFrame, periods: int = 14) -> Tuple[float, float]:
-    """Calculates RSI using TA-Lib."""
+    """
+    Calculate the Relative Strength Index (RSI) using TA-Lib.
+    
+    This function computes the RSI from the 'close' prices in the DataFrame over the specified period.
+    Additionally, it normalizes the RSI value using a helper function to fit within a defined scale (0 to 100),
+    and returns both the original and normalized values rounded to two decimal places.
+    
+    Parameters:
+        df (pd.DataFrame): A DataFrame containing market data with a 'close' column.
+        periods (int, optional): The time period over which to calculate the RSI. Defaults to 14.
+    
+    Returns:
+        Tuple[float, float]: A tuple containing:
+            - The original RSI value rounded to two decimal places.
+            - The normalized RSI value rounded to two decimal places.
+        Returns (0.0, 0.0) if an error occurs.
+    """
     try:
         rsi = talib.RSI(df['close'], timeperiod=periods)
         rsi_original = rsi.iloc[-1]
@@ -85,20 +110,49 @@ def get_rsi(df: pd.DataFrame, periods: int = 14) -> Tuple[float, float]:
         return 0.0, 0.0
 
 def get_stochastic(df: pd.DataFrame, periods: int = 14, k_smooth: int = 3, d_smooth: int = 3) -> Tuple[Tuple[float, float], Tuple[float, float]]:
-    """Calculates Stochastic Oscillator %K and %D, returning original and normalized values."""
+    """
+    Calculate the Stochastic Oscillator %K and %D values using TA-Lib.
+    
+    This function computes the Stochastic Oscillator values based on the high, low, and close prices in the DataFrame.
+    It calculates both the original and normalized values for %K and %D. Normalization is performed using a helper
+    function to scale the values between 0 and 100. The results are returned as a tuple of tuples:
+      - The first tuple contains the original and normalized %K values.
+      - The second tuple contains the original and normalized %D values.
+    
+    Parameters:
+        df (pd.DataFrame): A DataFrame containing market data with 'high', 'low', and 'close' columns.
+        periods (int, optional): The fast period for calculating %K. Defaults to 14.
+        k_smooth (int, optional): The slow period for smoothing %K. Defaults to 3.
+        d_smooth (int, optional): The slow period for smoothing %D. Defaults to 3.
+    
+    Returns:
+        Tuple[Tuple[float, float], Tuple[float, float]]:
+            - The first tuple contains:
+                - The original %K value rounded to two decimal places.
+                - The normalized %K value rounded to two decimal places.
+            - The second tuple contains:
+                - The original %D value rounded to two decimal places.
+                - The normalized %D value rounded to two decimal places.
+        Returns ((0.0, 0.0), (0.0, 0.0)) if an error occurs.
+    """
     try:
-        slowk, slowd = talib.STOCH(df['high'], df['low'], df['close'],
-                                   fastk_period=periods, slowk_period=k_smooth, slowk_matype=0,
-                                   slowd_period=d_smooth, slowd_matype=0)
+        slowk, slowd = talib.STOCH(
+            df['high'], df['low'], df['close'],
+            fastk_period=periods, slowk_period=k_smooth, slowk_matype=0,
+            slowd_period=d_smooth, slowd_matype=0
+        )
 
         k_percent_original = slowk.iloc[-1]
         d_percent_original = slowd.iloc[-1]
 
-        # Normalize
+        # Normalize the values to a scale from 0 to 100.
         k_percent_normalized = helpers.normalize_indicator(k_percent_original, 0, 100)
         d_percent_normalized = helpers.normalize_indicator(d_percent_original, 0, 100)
 
-        return (round(k_percent_original, 2), round(k_percent_normalized, 2)), (round(d_percent_original, 2), round(d_percent_normalized, 2))
+        return (
+            (round(k_percent_original, 2), round(k_percent_normalized, 2)),
+            (round(d_percent_original, 2), round(d_percent_normalized, 2))
+        )
     except Exception as e:
         logging.error(f"Error calculating Stochastic Oscillator: {e}")
         return (0.0, 0.0), (0.0, 0.0)
@@ -148,18 +202,55 @@ def get_atr(df: pd.DataFrame, periods: int = 14) -> Tuple[float, float]:
         return 0.0, 0.0  # Default values in case of error
 
 def get_bollinger_bands(df: pd.DataFrame, periods: int = 20) -> Tuple[float, float]:
-    """Calculates Bollinger Bands using TA-Lib."""
+    """
+    Calculate Bollinger Bands using TA-Lib.
+    
+    This function computes the Bollinger Bands for the 'close' price series in the DataFrame over the specified period.
+    It returns the most recent upper and lower band values, each rounded to two decimal places.
+    
+    Parameters:
+        df (pd.DataFrame): A DataFrame containing market data with a 'close' column.
+        periods (int, optional): The time period over which to calculate the Bollinger Bands. Defaults to 20.
+    
+    Returns:
+        Tuple[float, float]: A tuple containing:
+            - The latest upper band value rounded to two decimal places.
+            - The latest lower band value rounded to two decimal places.
+        If an error occurs during calculation, returns (0.0, 0.0).
+    """
     try:
-        upperband, middleband, lowerband = talib.BBANDS(df['close'], timeperiod=periods, nbdevup=2, nbdevdn=2, matype=0)
+        upperband, middleband, lowerband = talib.BBANDS(
+            df['close'], timeperiod=periods, nbdevup=2, nbdevdn=2, matype=0
+        )
         return round(upperband.iloc[-1], 2), round(lowerband.iloc[-1], 2)
     except Exception as e:
         logging.error(f"Error calculating Bollinger Bands: {e}")
         return 0.0, 0.0
 
 def calculate_pivot_points(df: pd.DataFrame) -> Dict[str, float]:
-    """Calculates pivot points and support/resistance levels."""
+    """
+    Calculate pivot points and corresponding support/resistance levels.
+    
+    This function computes the pivot point along with the first and second levels of support and resistance,
+    using the high, low, and close values from the previous day's data (penultimate row in the DataFrame).
+    The pivot point is calculated as the average of the high, low, and close. The support and resistance levels
+    are then derived from the pivot point and the range of the previous day's prices.
+    
+    Parameters:
+        df (pd.DataFrame): A DataFrame containing market data with 'high', 'low', and 'close' columns.
+    
+    Returns:
+        Dict[str, float]: A dictionary with the following keys:
+            - 'pivot': The calculated pivot point.
+            - 'resistance1': The first resistance level.
+            - 'support1': The first support level.
+            - 'resistance2': The second resistance level.
+            - 'support2': The second support level.
+        All values are rounded to two decimal places.
+        In case of an error, a dictionary with all values set to 0.0 is returned.
+    """
     try:
-        # Take data from the previous day
+        # Use data from the previous day (second to last row)
         high = df['high'].iloc[-2]
         low = df['low'].iloc[-2]
         close = df['close'].iloc[-2]
@@ -179,10 +270,36 @@ def calculate_pivot_points(df: pd.DataFrame) -> Dict[str, float]:
         }
     except Exception as e:
         logging.error(f"Error calculating pivot points: {e}")
-        return {'pivot': 0.0, 'resistance1': 0.0, 'support1': 0.0, 'resistance2': 0.0, 'support2': 0.0}
+        return {
+            'pivot': 0.0,
+            'resistance1': 0.0,
+            'support1': 0.0,
+            'resistance2': 0.0,
+            'support2': 0.0
+        }
 
 def calculate_fibonacci_levels(df: pd.DataFrame) -> Dict[str, float]:
-    """Calculates Fibonacci retracement levels."""
+    """
+    Calculate Fibonacci retracement levels based on recent price extremes.
+    
+    This function computes Fibonacci retracement levels using a 14-period rolling window to determine the recent maximum
+    and minimum prices. The range between these extremes is used to calculate key Fibonacci levels at 0%, 23.6%, 38.2%,
+    50%, 61.8%, 78.6%, and 100%. All computed levels are rounded to two decimal places.
+    
+    Parameters:
+        df (pd.DataFrame): A DataFrame containing market data with 'high' and 'low' columns.
+    
+    Returns:
+        Dict[str, float]: A dictionary with the following keys:
+            - 'level_0_percent': The recent maximum price.
+            - 'level_23_6_percent': The price level at 23.6% retracement.
+            - 'level_38_2_percent': The price level at 38.2% retracement.
+            - 'level_50_percent': The price level at 50% retracement.
+            - 'level_61_8_percent': The price level at 61.8% retracement.
+            - 'level_78_6_percent': The price level at 78.6% retracement.
+            - 'level_100_percent': The recent minimum price.
+        In case of an error, returns a dictionary with all levels set to 0.0.
+    """
     try:
         recent_max = df['high'].rolling(window=14).max().iloc[-1]
         recent_min = df['low'].rolling(window=14).min().iloc[-1]
