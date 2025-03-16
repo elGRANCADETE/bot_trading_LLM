@@ -16,7 +16,7 @@ def get_data(exchange):
     Retrieve market data and current prices.
     
     This function fetches OHLCV data using a 4-hour timeframe for the past 200 days from the provided exchange.
-    It also retrieves the current price and selects today's data by excluding the last (potentially incomplete) candle.
+    It retrieves the last candle from the final DataFrame, which has already discarded incomplete candles if necessary.
     Additionally, it logs the timestamp and volume of the selected candle.
     
     Parameters:
@@ -34,9 +34,10 @@ def get_data(exchange):
         raise ValueError("Insufficient OHLCV data.")
     current_price = data_fetcher.get_current_price(exchange)
     # Exclude the last candle as it may be incomplete
-    today_data = df.iloc[-2]
+    today_data = df.iloc[-1]
     # Log both date and time along with volume
-    logging.info(f"Using candle data with timestamp: {today_data['timestamp'].isoformat()} and volume: {today_data['volume']}")
+    logging.info(f"Using candle data with timestamp: {today_data['timestamp'].isoformat()} "
+             f"and volume: {today_data['volume']}")
     return df, current_price, today_data
 
 def compile_data(df, current_price, today_data, wallet_balance):
@@ -216,6 +217,8 @@ def run_data_collector() -> str:
 
         # Retrieve and compile market data
         df, current_price, today_data = get_data(exchange)
+        logging.info(f"After get_data, df has {len(df)} rows. RSI requires 14+ candles for period=14.")
+
         compiled_data = compile_data(df, current_price, today_data, wallet_balance)
 
         compiled_data['multi_timeframe_analysis'] = output.get_multi_timeframe_analysis(exchange)

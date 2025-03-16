@@ -58,12 +58,6 @@ def connect_binance_wallet_testnet() -> Client:
 def get_wallet_data(client: Client) -> dict:
     """
     Retrieves wallet balances for Bitcoin and USDT on Binance Testnet.
-
-    Parameters:
-        client (Client): Binance Testnet connection object.
-
-    Returns:
-        dict: Dictionary with BTC and USDT balances.
     """
     max_retries = 3
     for attempt in range(max_retries):
@@ -90,5 +84,7 @@ def get_wallet_data(client: Client) -> dict:
                     logging.error(f"Failed to resynchronize time: {sync_e}")
                     break
             time.sleep(1)  # Wait a second before retrying
+    
+    # Si llegamos aquí, es que no se pudo recuperar el balance tras varios intentos
     logging.error("Failed to retrieve wallet balance after multiple attempts.")
-    return {}
+    raise RuntimeError("Failed to retrieve wallet balance after multiple attempts.")

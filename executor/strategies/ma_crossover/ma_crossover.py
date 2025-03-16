@@ -1,11 +1,16 @@
 # tfg_bot_trading/executor/strategies/ma_crossover/ma_crossover.py
 
+import os
 import json
 import logging
-import pandas as pd
 import numpy as np
+import pandas as pd
+from binance.client import Client
 
-# Configure logger for debugging and error messages
+# Ensure that binance_api.py includes:
+#   connect_binance_production() and fetch_klines_df(...)
+from executor.binance_api import connect_binance_production, fetch_klines_df
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 if not logger.hasHandlers():
@@ -15,85 +20,88 @@ if not logger.hasHandlers():
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-def calculate_moving_averages(df: pd.DataFrame, fast: int, slow: int) -> pd.DataFrame:
-    """
-    Calculate fast and slow moving averages for the given DataFrame.
-    Adds new columns: 'fast_ma' and 'slow_ma'.
-    """
-    # Compute fast and slow moving averages using a minimum period to ensure valid values
-    df["fast_ma"] = df["closing_price_usd"].rolling(window=fast, min_periods=fast).mean()
-    df["slow_ma"] = df["closing_price_usd"].rolling(window=slow, min_periods=slow).mean()
-    return df
 
-def run_strategy(data_json: str, params: dict) -> str:
+def run_strategy(_ignored_data_json: str, params: dict) -> str:
     """
-    MA Crossover Strategy:
-      - params: {"fast": 10, "slow": 50}
-      - Computes fast and slow moving averages.
-      - If the fast MA crosses above the slow MA => BUY.
-      - If the fast MA crosses below the slow MA => SELL.
-      - Otherwise => HOLD.
+    MA Crossover Strategy (single-run version) that ignores data_json and
+    downloads candlesticks directly from Binance Production.
+
+    Parameters in 'params':
+      - fast (int): size of the fast moving average (e.g., 10)
+      - slow (int): size of the slow moving average (e.g., 50)
+
+    Logic:
+      1) Connect to Binance Production.
+      2) Download ~100 days of 4h candlesticks for BTCUSDT.
+      3) Calculate fast and slow moving averages.
+      4) If the fast MA crosses above the slow MA => BUY
+         If the fast MA crosses below the slow MA => SELL
+         If there is no crossover => HOLD
     """
+    # 1) Extract parameters
     fast = params.get("fast", 10)
     slow = params.get("slow", 50)
 
-    # Parse JSON safely
-    try:
-        data_dict = json.loads(data_json)
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decoding error: {e}")
-        return "HOLD"
+    if slow <= fast:
+        logger.warning("(MA Crossover) 'slow' should be greater than 'fast'; unusual configuration.")
 
-    prices = data_dict.get("historical_data", {}).get("historical_prices", [])
-    if not prices:
-        logger.warning("No price data found.")
-        return "HOLD"
-
+    # 2) Connect to Binance Production
     try:
-        df = pd.DataFrame(prices)
+        client = connect_binance_production()
     except Exception as e:
-        logger.error(f"Error converting price data to DataFrame: {e}")
+        logger.error(f"(MA Crossover) Error connecting to Binance Production: {e}")
         return "HOLD"
-    
-    # Sort by date if available
-    if "date" in df.columns:
-        try:
-            df = df.sort_values("date").reset_index(drop=True)
-        except Exception as e:
-            logger.error(f"Error sorting DataFrame by date: {e}")
+
+    # 3) Download ~100 days of 4h candlesticks
+    try:
+        df_klines = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+        if df_klines.empty:
+            logger.warning("(MA Crossover) No candlesticks obtained => HOLD")
             return "HOLD"
-    
-    if "closing_price_usd" not in df.columns:
-        logger.error("Required column 'closing_price_usd' not found.")
-        return "HOLD"
-    
-    # Ensure there is enough data for moving averages calculation
-    if len(df) < max(fast, slow):
-        logger.warning("Not enough data to compute moving averages.")
+    except Exception as e:
+        logger.error(f"(MA Crossover) Error downloading candlesticks: {e}")
         return "HOLD"
 
-    # Calculate moving averages using the helper function
-    df = calculate_moving_averages(df, fast, slow)
-
-    # Check that the last two moving averages are valid numbers (not NaN)
-    if len(df) < 2 or pd.isna(df["fast_ma"].iloc[-1]) or pd.isna(df["slow_ma"].iloc[-1]):
-        logger.warning("Insufficient data for MA crossover analysis (NaN values encountered).")
+    # 4) Ensure there is enough data
+    if len(df_klines) < max(fast, slow):
+        logger.warning(f"(MA Crossover) Insufficient candlesticks => need {max(fast, slow)}, only have {len(df_klines)} => HOLD")
         return "HOLD"
 
+    # 5) Build DataFrame
+    df = df_klines.rename(columns={
+        "open_time": "date",
+        "high": "high_usd",
+        "low": "low_usd",
+        "close": "closing_price_usd"
+    }).sort_values("date").reset_index(drop=True)
+
+    # Calculate moving averages
+    df["fast_ma"] = df["closing_price_usd"].rolling(window=fast, min_periods=fast).mean()
+    df["slow_ma"] = df["closing_price_usd"].rolling(window=slow, min_periods=slow).mean()
+
+    # Verify that the final moving averages are not NaN
+    if pd.isna(df["fast_ma"].iloc[-1]) or pd.isna(df["slow_ma"].iloc[-1]):
+        logger.warning("(MA Crossover) The last moving average is NaN => HOLD")
+        return "HOLD"
+
+    # 6) Detect crossover
     prev_fast = df["fast_ma"].iloc[-2]
     prev_slow = df["slow_ma"].iloc[-2]
     last_fast = df["fast_ma"].iloc[-1]
     last_slow = df["slow_ma"].iloc[-1]
 
-    logger.debug(f"Previous Fast MA: {prev_fast}, Previous Slow MA: {prev_slow}")
-    logger.debug(f"Last Fast MA: {last_fast}, Last Slow MA: {last_slow}")
+    logger.debug(f"(MA Crossover) prev_fast={prev_fast}, prev_slow={prev_slow}, "
+                 f"last_fast={last_fast}, last_slow={last_slow}")
 
+    # 7) Decision rules
+    # fast crosses above => BUY
     if prev_fast < prev_slow and last_fast > last_slow:
-        logger.info("Signal: BUY (fast MA crossed above slow MA).")
+        logger.info("(MA Crossover) BUY => the fast MA crosses above the slow MA.")
         return "BUY"
+    # fast crosses below => SELL
     elif prev_fast > prev_slow and last_fast < last_slow:
-        logger.info("Signal: SELL (fast MA crossed below slow MA).")
+        logger.info("(MA Crossover) SELL => the fast MA crosses below the slow MA.")
         return "SELL"
     else:
-        logger.info("Signal: HOLD (no crossover detected).")
+        logger.info("(MA Crossover) HOLD => no crossover detected.")
         return "HOLD"

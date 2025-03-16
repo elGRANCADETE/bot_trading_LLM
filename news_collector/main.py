@@ -60,7 +60,9 @@ def get_complete_bitcoin_report() -> str:
         "-----------------------------------------------------------------\n"
         "PERIOD: LAST YEAR\n"
         "(Detailed text about political decisions, regulations, institutional adoption, "
-        "macroeconomic events, involvement of key figures, etc.)\n"
+        "macroeconomic events, involvement of key figures, and significant incidents affecting the crypto market "
+        "(e.g., hacks, security breaches, or financial problems in major exchanges) "
+        "that impacted Bitcoin's price.)\n"
         "-----------------------------------------------------------------\n"
         "PERIOD: LAST 5 MONTHS\n"
         "(Detailed text...)\n"
@@ -89,7 +91,7 @@ def get_complete_bitcoin_report() -> str:
     }
     
     data = {
-        "model": "sonar",  # or the model corresponding to your plan
+        "model": "sonar-reasoning-pro",  # or the model corresponding to your plan
         "messages": [
             {
                 "role": "system",

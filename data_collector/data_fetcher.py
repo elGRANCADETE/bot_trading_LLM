@@ -71,6 +71,8 @@ def get_ohlcv_data(exchange, symbol: str = 'BTC/USDT', timeframe: str = '4h', da
         # El último candle está incompleto, se elimina
         df = df.iloc[:-1]
 
+    logging.info(f"get_ohlcv_data => final DataFrame has {len(df)} candles after discarding incomplete ones.")
+
     return df
 
 def get_current_price(exchange, symbol: str = 'BTC/USDT') -> float:

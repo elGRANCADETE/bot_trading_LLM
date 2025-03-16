@@ -1,169 +1,190 @@
 # tfg_bot_trading/orchestrator.py
 
-import logging 
+import logging
 import time
 import os
 import signal
 import sys
 from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
 
-# Import modules from the project:
-# - Data collection for market data and news.
-# - Trader executor to load and process trading positions.
-# - LLM decision maker to generate trade decisions.
-# - Binance API module to connect and manage orders.
+# Import project modules
 from data_collector.main import run_data_collector
 from news_collector.main import run_news_collector
-from executor.trader_executor import load_position_state, process_decision
+from executor.trader_executor import (
+    load_position_state,
+    save_position_state,
+    process_multiple_decisions
+)
+from executor.binance_api import (
+    connect_binance_testnet,
+    cancel_all_open_orders
+)
 from decision_llm.main import run_decision
-from executor.binance_api import connect_binance_testnet, cancel_all_open_orders
 
+# Import the StrategyManager (now containing StrategyRunner and make_strategy_id)
+from executor.strategy_manager import StrategyManager
+
+# Logging configuration
 logging.basicConfig(level=logging.INFO)
 
-client = None  # Global Binance client to reuse across cycles
-SYMBOL = "BTCUSDT"  # Trading pair; adjust if operating with a different symbol
+# Global variables
+client = None  # Global connection to Binance
+SYMBOL = "BTCUSDT"
+strategy_manager = StrategyManager()  # Instance of the strategy manager
 
 def handle_exit(signum, frame):
     """
-    Signal handler for SIGINT (Ctrl+C) or SIGTERM.
-    Cancels all open orders for the given SYMBOL on Binance and terminates the program.
+    Handles the interruption signal (CTRL+C / SIGTERM):
+      - Cancels open orders.
+      - Stops all strategy threads.
+      - Exits the program.
     """
     global client
+    logging.info("Interruption signal => canceling orders and exiting.")
     if client:
-        logging.info("Interrupt detected => Canceling all open orders on Binance.")
         cancel_all_open_orders(client, SYMBOL)
-    logging.info("Bot interrupted. Exiting...")
+    # Stop all strategies
+    strategy_manager.stop_all()
     sys.exit(0)
 
 def main_loop():
-    """
-    Main loop for the trading bot.
-    This loop runs indefinitely with each cycle lasting 4 hours. During each cycle:
-      1. It loads the previous trading position.
-      2. If the previous position is older than 4 hours, it is invalidated.
-      3. It collects the latest market data.
-      4. It collects news every 12 hours (once every 3 cycles).
-      5. It calculates the time elapsed since the last position.
-      6. It calls an LLM (DeepSeek) to determine a trading decision.
-      7. It logs the LLM analysis and decision details.
-      8. It processes the decision and updates the trading position.
-      9. It sleeps for 4 hours before the next cycle.
-    The loop terminates if any critical connection or data retrieval fails.
-    """
     global client
 
-    # Attempt to connect to Binance Testnet; terminate if connection fails
+    # 1) Connect to Binance Testnet
     try:
         client = connect_binance_testnet()
     except Exception as e:
-        logging.error(f"Error connecting to Binance Testnet: {e}. Exiting...")
+        logging.error(f"Error connecting to testnet: {e}")
         sys.exit(1)
 
-    # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
     cycle_count = 0
     old_news_text = "No news yet."
+    current_pos = None  # Current position (loaded from file if exists)
 
-    # Main cycle: every cycle lasts 4 hours. News are updated every 3 cycles (12 hours).
     while True:
         cycle_count += 1
         logging.info(f"=== Starting 4h cycle #{cycle_count} ===")
 
-        # 1) Load the previous trading position from storage.
-        try:
-            current_pos = load_position_state()
-        except Exception as e:
-            logging.error(f"Error loading position state: {e}. Exiting...")
-            sys.exit(1)
-
-        # 2) Invalidate the current position if it's older than 4 hours.
+        # 1) Load the saved position (if exists) and discard it if it is over 4 hours old
+        current_pos = load_position_state()
         if current_pos and "timestamp" in current_pos:
-            last_ts = datetime.fromisoformat(current_pos["timestamp"])
             now = datetime.now(timezone.utc)
-            delta_hrs = (now - last_ts).total_seconds() / 3600.0
+            delta_hrs = (now - current_pos["timestamp"]).total_seconds() / 3600.0
             if delta_hrs > 4:
-                logging.info("Position is older than 4 hours => invalidating it.")
+                logging.info("The position is over 4 hours old => invalidating.")
                 current_pos = None
+                if os.path.exists("position_state.json"):
+                    os.remove("position_state.json")
 
-        # 3) Collect market data (runs every cycle, i.e., every 4 hours).
+        # 2) Collect market data
         try:
             data_json = run_data_collector()
             if not data_json or data_json == "{}":
-                raise ValueError("Market data is empty")
+                raise ValueError("Empty market data.")
         except Exception as e:
-            logging.error(f"Error collecting market data: {e}. Exiting...")
+            logging.error(f"Error in data_collector: {e}")
             sys.exit(1)
 
-        # 4) Collect news every 12 hours (every 3 cycles). Otherwise, reuse the previous news.
+        # 3) Collect news every 12 hours
         if (cycle_count % 3) == 1:
             try:
-                logging.info("Updating news (every 12 hours).")
+                logging.info("Updating news (every 12h).")
                 old_news_text = run_news_collector()
                 if not old_news_text:
-                    raise ValueError("News text is empty")
+                    raise ValueError("Empty news text.")
             except Exception as e:
-                logging.error(f"Error collecting news: {e}. Exiting...")
+                logging.error(f"Error in news_collector: {e}")
                 sys.exit(1)
         else:
-            logging.info("News collector not run this cycle -> reusing previous news.")
+            logging.info("No news collected this cycle.")
         news_text = old_news_text
 
-        # 5) Calculate hours elapsed since the current position was opened.
+        # 4) Calculate hours since the last position
         hours_since_pos = None
         if current_pos and "timestamp" in current_pos:
-            last_ts = datetime.fromisoformat(current_pos["timestamp"])
             now = datetime.now(timezone.utc)
-            hours_since_pos = (now - last_ts).total_seconds() / 3600.0
+            hours_since_pos = (now - current_pos["timestamp"]).total_seconds() / 3600.0
 
-        # 6) Call the LLM to obtain a trading decision.
+        # 5) Invoke the LLM to get decisions
         try:
-            decision = run_decision(
+            wallet_balances = {"BTC": 1.05, "USDT": 5643.658}
+            current_positions_list = [current_pos] if current_pos else []
+            decisions = run_decision(
                 data_json=data_json,
                 news_text=news_text,
-                current_position=current_pos,
-                hours_since_pos=hours_since_pos
+                wallet_balances=wallet_balances,
+                current_positions=current_positions_list,
+                hours_since_last_trade=hours_since_pos
             )
-            # If the LLM analysis indicates a critical error (e.g., missing API key), stop the bot.
-            if "No API key" in decision.get("analysis", "") or "Error" in decision.get("analysis", ""):
-                logging.error("Critical error in LLM (DeepSeek) connection. Terminating execution.")
-                sys.exit(1)
         except Exception as e:
-            logging.error(f"Error obtaining decision from LLM: {e}. Exiting...")
+            logging.error(f"Error obtaining decisions from the LLM: {e}")
             sys.exit(1)
 
-        # 7) Log the LLM analysis (remove it from the decision dictionary).
-        analysis_text = decision.pop("analysis", "")
-        logging.info(f"LLM Analysis => {analysis_text}")
+        if not decisions:
+            logging.info("LLM returned nothing => default HOLD.")
+            decisions = [{"action": "HOLD"}]
 
-        # 8) Log final decision details (such as side and size) if available.
-        action = decision.get("action", "HOLD")
-        side = decision.get("side", None)
-        size = decision.get("size", None)
-        if side and size:
-            logging.info(f"LLM final decision => action={action}, side={side}, size={size}")
-        else:
-            logging.info(f"LLM final decision => action={action} (no side/size)")
+        # 6) Process the decisions:
+        #    - Decisions with USE_STRATEGY are managed with the StrategyManager.
+        #    - Decisions with DIRECT_ORDER, HOLD, etc. are stored to be processed later.
+        direct_orders = []
+        new_strategy_ids = []
+        seen_strategy_ids = set()
 
-        # 9) Process the decision and update the trading position.
-        try:
-            new_pos = process_decision(decision, data_json, current_pos, client)
-        except Exception as e:
-            logging.error(f"Error processing decision: {e}. Exiting...")
-            sys.exit(1)
-        logging.info(f"New position => {new_pos}")
+        for dec in decisions:
+            action = dec.get("action", "HOLD")
+            if action == "USE_STRATEGY":
+                sname = dec.get("strategy_name", "")
+                sparams = dec.get("params", {})
+                # Generate a unique ID for the strategy
+                sid = f"{sname}|{'_'.join(f'{k}-{v}' for k, v in sorted(sparams.items()))}"
+                # Avoid duplicates in this cycle
+                if sid in seen_strategy_ids:
+                    logging.info(f"Duplicate strategy decision {sid} detected; skipping duplicate.")
+                    continue
+                seen_strategy_ids.add(sid)
+                new_strategy_ids.append(sid)
+                # Start or maintain the strategy via the StrategyManager
+                strategy_manager.start_strategy(sname, sparams, data_json)
+            elif action in ("DIRECT_ORDER", "HOLD", "CLOSE_POSITION", "CANCEL_ORDER"):
+                direct_orders.append(dec)
+            else:
+                logging.info(f"Unknown action: {action}, ignoring.")
 
-        logging.info("Sleeping 4 hours until the next cycle...\n")
+        # b) Process direct orders (BUY/SELL, etc.)
+        if direct_orders:
+            try:
+                new_pos = process_multiple_decisions(direct_orders, data_json, current_pos, client)
+                if new_pos != current_pos:
+                    current_pos = new_pos
+                    if current_pos:
+                        save_position_state(current_pos)
+                    else:
+                        if os.path.exists("position_state.json"):
+                            os.remove("position_state.json")
+                logging.info(f"Position after direct_orders => {current_pos}")
+            except Exception as e:
+                logging.error(f"Error in process_multiple_decisions: {e}")
+
+        # c) Update the state of strategies: stop those that are no longer used
+        strategy_manager.update_strategies(new_strategy_ids)
+
+        # 7) Sleep for 4 hours until the next cycle
+        logging.info("Sleeping for 4 hours until the next cycle...\n")
         time.sleep(4 * 3600)
 
 def main():
-    """
-    Main entry point for the trading bot.
-    Logs the start of the 4-hour cycle loop and calls the main loop function.
-    """
-    logging.info("Trading Bot: Starting 4-hour cycle loop.")
-    main_loop()
+    logging.info("Trading Bot: starting main loop (every 4h).")
+    try:
+        main_loop()
+    finally:
+        logging.info("Exiting... Stopping strategy threads.")
+        strategy_manager.stop_all()
+        logging.info("Bot terminated.")
 
 if __name__ == "__main__":
     main()

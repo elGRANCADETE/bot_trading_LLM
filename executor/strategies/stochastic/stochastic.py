@@ -1,11 +1,10 @@
 # tfg_bot_trading/executor/strategies/stochastic/stochastic.py
 
-import json
+import ccxt
 import logging
 import pandas as pd
 import numpy as np
 
-# Configure logger for debugging and error messages
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 if not logger.hasHandlers():
@@ -17,97 +16,105 @@ if not logger.hasHandlers():
 
 def calculate_stochastic(df: pd.DataFrame, k_period: int, d_period: int) -> pd.DataFrame:
     """
-    Calculate the Stochastic Oscillator (%K and %D) for the given DataFrame.
-    Adds new columns: 'lowest_low', 'highest_high', 'K', and 'D'.
+    Calculates the Stochastic Oscillator (%K and %D) for the DataFrame,
+    adding columns 'lowest_low', 'highest_high', 'K', and 'D'.
+
+    The DataFrame is expected to have columns: ['timestamp', 'open', 'high', 'low', 'close', 'volume'].
     """
-    # Calculate the lowest low and highest high over the k_period window
-    df["lowest_low"] = df["low_usd"].rolling(window=k_period, min_periods=k_period).min()
-    df["highest_high"] = df["high_usd"].rolling(window=k_period, min_periods=k_period).max()
-    
-    # Check for valid values: if the last value is NaN, log a warning
-    if pd.isna(df["lowest_low"].iloc[-1]) or pd.isna(df["highest_high"].iloc[-1]):
-        logger.warning("Insufficient data to compute the lowest low or highest high for the stochastic oscillator.")
+    if len(df) < k_period:
+        logger.warning(f"Stochastic => not enough candles: k_period={k_period}, only {len(df)} available.")
         return df
-    
-    # Calculate %K
-    df["K"] = 100 * ((df["closing_price_usd"] - df["lowest_low"]) / (df["highest_high"] - df["lowest_low"] + 1e-9))
-    # Calculate %D as the moving average of %K over d_period
+
+    # lowest_low and highest_high over the k_period window
+    df["lowest_low"] = df["low"].rolling(window=k_period, min_periods=k_period).min()
+    df["highest_high"] = df["high"].rolling(window=k_period, min_periods=k_period).max()
+
+    # If the last row is NaN, calculation was not possible
+    if pd.isna(df["lowest_low"].iloc[-1]) or pd.isna(df["highest_high"].iloc[-1]):
+        logger.warning("Stochastic => NaN values encountered => insufficient data.")
+        return df
+
+    # %K = 100 * (close - lowest_low) / (highest_high - lowest_low)
+    # Add a small constant (1e-9) to avoid division by zero
+    df["K"] = 100 * ((df["close"] - df["lowest_low"]) / (df["highest_high"] - df["lowest_low"] + 1e-9))
+
+    # %D = moving average of %K over d_period
+    if len(df) < (k_period + d_period - 1):
+        logger.warning(f"Stochastic => not enough candles for d_period={d_period}.")
+        return df
+
     df["D"] = df["K"].rolling(window=d_period, min_periods=d_period).mean()
-    
+
     return df
 
-def run_strategy(data_json: str, params: dict) -> str:
+def run_strategy(_ignored_data_json: str, params: dict) -> str:
     """
-    Stochastic Oscillator Strategy:
-      - params = { "k_period": 14, "d_period": 3, "overbought": 80, "oversold": 20 }
-      - Computes %K and %D.
-      - If %K > overbought => SELL.
-      - If %K < oversold => BUY.
-      - Otherwise, returns HOLD.
+    Stochastic Strategy that ignores the data_json and fetches candles via ccxt.
+
+    Expected parameters in 'params':
+      - k_period (int): window size for %K (e.g., 14)
+      - d_period (int): window size for %D (e.g., 3)
+      - overbought (float): overbought threshold (e.g., 80)
+      - oversold (float): oversold threshold (e.g., 20)
+      - timeframe (str): ccxt timeframe (e.g., "4h"). Default is "4h".
+
+    Logic:
+      - If %K > overbought => SELL
+      - If %K < oversold => BUY
+      - Otherwise => HOLD
     """
     k_period = params.get("k_period", 14)
     d_period = params.get("d_period", 3)
     overbought = params.get("overbought", 80)
     oversold = params.get("oversold", 20)
+    timeframe = params.get("timeframe", "4h")
 
-    # Parse JSON safely
+    logger.info(f"(Stochastic) Downloading candles via ccxt. timeframe={timeframe}, limit=60")
+
     try:
-        data_dict = json.loads(data_json)
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decoding error: {e}")
-        return "HOLD"
-
-    prices = data_dict.get("historical_data", {}).get("historical_prices", [])
-    if not prices:
-        logger.warning("No price data available.")
-        return "HOLD"
-
-    # Convert prices to a DataFrame
-    try:
-        df = pd.DataFrame(prices)
+        # Create a ccxt Binance instance
+        exchange = ccxt.binance({"enableRateLimit": True})
+        # Download ~60 candles for the BTC/USDT pair
+        limit_candles = 60
+        ohlcv = exchange.fetch_ohlcv("BTC/USDT", timeframe=timeframe, limit=limit_candles)
     except Exception as e:
-        logger.error(f"Error converting price data to DataFrame: {e}")
+        logger.error(f"(Stochastic) Error fetching ohlcv => {e}")
         return "HOLD"
-    
-    # Sort by date if available for chronological order
-    if "date" in df.columns:
-        try:
-            df = df.sort_values("date").reset_index(drop=True)
-        except Exception as e:
-            logger.error(f"Error sorting DataFrame by date: {e}")
-            return "HOLD"
-    
-    # Check required columns
-    for col in ["high_usd", "low_usd", "closing_price_usd"]:
-        if col not in df.columns:
-            logger.error(f"Required column '{col}' not found.")
-            return "HOLD"
-    
-    # Ensure there is enough data for the stochastic calculation
-    if len(df) < max(k_period, d_period):
-        logger.warning("Not enough data points for the stochastic calculation.")
+
+    if not ohlcv:
+        logger.warning("(Stochastic) fetch_ohlcv returned an empty list => HOLD")
         return "HOLD"
-    
-    # Calculate the stochastic oscillator values
+
+    # Convert to DataFrame
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df = df.sort_values("timestamp").reset_index(drop=True)
+
+    logger.info(f"(Stochastic) Received {len(df)} candles => last: {df.iloc[-1]['timestamp']}")
+
+    # Calculate %K and %D
     df = calculate_stochastic(df, k_period, d_period)
-    
-    # Validate that the last %K and %D values are not NaN
-    if pd.isna(df["K"].iloc[-1]) or pd.isna(df["D"].iloc[-1]):
-        logger.warning("Insufficient data for stochastic oscillator (NaN encountered).")
+
+    # Validate that the columns 'K' and 'D' exist and are not NaN
+    if "K" not in df.columns or "D" not in df.columns:
+        logger.warning("(Stochastic) Unable to generate K or D columns => HOLD")
         return "HOLD"
-    
-    last_k = df["K"].iloc[-1]
-    last_d = df["D"].iloc[-1]
-    
-    logger.debug(f"Last %K: {last_k}, Last %D: {last_d}")
-    
-    # Basic decision logic: if %K > overbought => SELL, if %K < oversold => BUY, else HOLD.
+    if pd.isna(df["K"].iloc[-1]) or pd.isna(df["D"].iloc[-1]):
+        logger.warning("(Stochastic) NaN values in K or D => HOLD")
+        return "HOLD"
+
+    last_k = float(df["K"].iloc[-1])
+    last_d = float(df["D"].iloc[-1])
+
+    logger.debug(f"(Stochastic) Last %K: {last_k:.2f}, last %D: {last_d:.2f}")
+
+    # Trading logic
     if last_k > overbought:
-        logger.info("Signal: SELL (Stochastic %K above overbought threshold).")
+        logger.info("(Stochastic) SELL => %K is above overbought threshold.")
         return "SELL"
     elif last_k < oversold:
-        logger.info("Signal: BUY (Stochastic %K below oversold threshold).")
+        logger.info("(Stochastic) BUY => %K is below oversold threshold.")
         return "BUY"
     else:
-        logger.info("Signal: HOLD (Stochastic %K within neutral range).")
+        logger.info("(Stochastic) HOLD => %K is in a neutral range.")
         return "HOLD"

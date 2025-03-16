@@ -1,18 +1,40 @@
-# tfg_bot_trading/executor/strategies/ichimoku/chimoku.py
+# tfg_bot_trading/executor/strategies/ichimoku/ichimoku.py
 
-import json
 import os
-import pandas as pd
+import json
+import logging
 import numpy as np
+import pandas as pd
+from binance.client import Client
 
-# Definimos la ruta del archivo de estado relativo al directorio de este módulo
+# Ensure that binance_api.py contains:
+#   connect_binance_production() and fetch_klines_df(...)
+from executor.binance_api import connect_binance_production, fetch_klines_df
+
+# File where a minimal persistent state will be stored (e.g. 'last_signal')
 STATE_FILE = os.path.join(os.path.dirname(__file__), "ichimoku_state.json")
+logger = logging.getLogger(__name__)
+
+def default_converter(o):
+    """
+    Converts NumPy types to native Python types to avoid errors
+    with json.dump().
+    """
+    if isinstance(o, np.integer):
+        return int(o)
+    elif isinstance(o, np.floating):
+        return float(o)
+    elif isinstance(o, np.bool_):
+        return bool(o)
+    return str(o)
 
 def load_state():
     """
-    Carga el estado persistido de la estrategia.
-    Si no existe, devuelve un estado inicial con "last_signal" en HOLD.
+    Loads the persistent state of Ichimoku (for example, 'last_signal').
+    If it does not exist, returns {"last_signal": "HOLD"}.
     """
+    if not os.path.exists(STATE_FILE):
+        return {"last_signal": "HOLD"}
     try:
         with open(STATE_FILE, "r") as f:
             return json.load(f)
@@ -21,104 +43,96 @@ def load_state():
 
 def save_state(state):
     """
-    Guarda el estado de la estrategia en el archivo JSON.
+    Saves the persistent state of Ichimoku (e.g. 'last_signal')
+    to the JSON file, handling NumPy types.
     """
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, default=default_converter)
+    except Exception as e:
+        logger.error(f"Error saving Ichimoku state: {e}")
 
-def run_strategy(data_json: str, params: dict) -> str:
+def run_strategy(_ignored_data_json: str, params: dict) -> str:
     """
-    Ichimoku strategy (moderate version) with persistent state.
-    
-    Parameters
-    ----------
-    data_json : str
-        A JSON string containing market data, e.g. compiled from your data_collector.
-    params : dict
-        {
-          "tenkan_period": 9,
-          "kijun_period": 26,
-          "senkou_span_b_period": 52,
-          "displacement": 26
-        }
-    
-    Explanation
-    -----------
-    1) Tenkan-sen = average of highest high and lowest low over the last 'tenkan_period' candles.
-    2) Kijun-sen  = average of highest high and lowest low over the last 'kijun_period' candles.
-    3) Span A     = average of Tenkan-sen and Kijun-sen, shifted forward 'displacement' candles.
-    4) Span B     = average of highest high and lowest low over last 'senkou_span_b_period' candles,
-                    shifted forward.
-    5) Chikou Span = the closing price shifted backward 'displacement' candles.
-    6) Se calculan señales bullish y bearish a partir de cruces, posición del precio frente al “nube”,
-       color de la nube y la posición del Chikou.
-    7) Se asigna una puntuación bullish y bearish; si bullish_score >= 3 y bearish_score < 3 => "BUY",
-       si lo contrario => "SELL", en caso contrario => "HOLD".
-    8) Se utiliza un estado persistente para emitir la orden solo si hay un cambio respecto al estado anterior.
-    
-    Returns
-    -------
-    str : "BUY", "SELL" or "HOLD"
+    Single-run version of Ichimoku:
+      - Ignores 'data_json' and downloads candlesticks directly from Binance Production.
+      - Reads/writes a small persistent state (STATE_FILE).
+      - Returns "BUY", "SELL" or "HOLD" based on the current crossover.
+
+    Parameters in 'params':
+      {
+        "tenkan_period": 9,
+        "kijun_period": 26,
+        "senkou_span_b_period": 52,
+        "displacement": 26
+      }
     """
-    # Cargar el estado persistido
     state = load_state()
+    last_signal = state.get("last_signal", "HOLD")
 
-    # Parámetros con valores por defecto
+    # Extract parameters
     tenkan_p = params.get("tenkan_period", 9)
     kijun_p  = params.get("kijun_period", 26)
     span_b_p = params.get("senkou_span_b_period", 52)
     displacement = params.get("displacement", 26)
 
-    # Parsear datos
-    data_dict = json.loads(data_json)
-    prices = data_dict.get("historical_data", {}).get("historical_prices", [])
-    if not prices:
-        return "HOLD"
-
-    df = pd.DataFrame(prices).sort_values("date").reset_index(drop=True)
-
-    # Necesitamos al menos (span_b_p + displacement) velas
     needed_min = span_b_p + displacement
-    if len(df) < needed_min:
+
+    # 1) Connect to Binance Production
+    try:
+        client = connect_binance_production()
+    except Exception as e:
+        logger.error(f"(Ichimoku) Error connecting to Binance Production: {e}")
         return "HOLD"
 
-    # Verificar columnas requeridas
-    required_cols = {"high_usd", "low_usd", "closing_price_usd"}
-    if not required_cols.issubset(df.columns):
+    # 2) Download ~100 days of 4h candlesticks
+    try:
+        df_klines = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+        if df_klines.empty:
+            logger.warning("(Ichimoku) No candlesticks => HOLD")
+            return "HOLD"
+    except Exception as e:
+        logger.error(f"(Ichimoku) Error downloading candlesticks: {e}")
         return "HOLD"
 
-    # Cálculo de Tenkan-sen
+    if len(df_klines) < needed_min:
+        logger.warning(f"(Ichimoku) Not enough candlesticks => require {needed_min}, only have {len(df_klines)} => HOLD")
+        return "HOLD"
+
+    # 3) Build DataFrame
+    df = df_klines.rename(columns={
+        "open_time": "date",
+        "high": "high_usd",
+        "low": "low_usd",
+        "close": "closing_price_usd"
+    }).sort_values("date").reset_index(drop=True)
+
+    # 4) Calculate Ichimoku lines
     df["tenkan_high"] = df["high_usd"].rolling(tenkan_p).max()
     df["tenkan_low"]  = df["low_usd"].rolling(tenkan_p).min()
     df["tenkan_sen"]  = (df["tenkan_high"] + df["tenkan_low"]) / 2.0
 
-    # Cálculo de Kijun-sen
     df["kijun_high"] = df["high_usd"].rolling(kijun_p).max()
     df["kijun_low"]  = df["low_usd"].rolling(kijun_p).min()
     df["kijun_sen"]  = (df["kijun_high"] + df["kijun_low"]) / 2.0
 
-    # Span A = promedio de Tenkan y Kijun, desplazado hacia adelante
     df["span_a"] = (df["tenkan_sen"] + df["kijun_sen"]) / 2.0
     df["span_a"] = df["span_a"].shift(displacement)
 
-    # Span B = promedio del máximo y mínimo en una ventana de 'span_b_p', desplazado
     df["span_b_high"] = df["high_usd"].rolling(span_b_p).max()
     df["span_b_low"]  = df["low_usd"].rolling(span_b_p).min()
-    df["span_b"] = (df["span_b_high"] + df["span_b_low"]) / 2.0
-    df["span_b"] = df["span_b"].shift(displacement)
+    df["span_b"]      = (df["span_b_high"] + df["span_b_low"]) / 2.0
+    df["span_b"]      = df["span_b"].shift(displacement)
 
-    # Chikou Span: precio de cierre desplazado hacia atrás 'displacement' velas
     df["chikou"] = np.nan
     for i in range(displacement, len(df)):
         df.at[i, "chikou"] = df["closing_price_usd"].iloc[i - displacement]
 
-    # Seleccionar la última vela y la anterior
     last_idx = df.index[-1]
     prev_idx = last_idx - 1
     if prev_idx < 0:
         return "HOLD"
 
-    # Extraer valores finales
     tenkan_prev = df.at[prev_idx, "tenkan_sen"]
     kijun_prev  = df.at[prev_idx, "kijun_sen"]
     tenkan_last = df.at[last_idx, "tenkan_sen"]
@@ -128,17 +142,18 @@ def run_strategy(data_json: str, params: dict) -> str:
     span_b_last = df.at[last_idx, "span_b"]
     chikou_last = df.at[last_idx, "chikou"]
 
-    # Verificar que no existan valores NaN
-    numeric_vals = [tenkan_prev, kijun_prev, tenkan_last, kijun_last,
-                    price_last, span_a_last, span_b_last, chikou_last]
+    numeric_vals = [
+        tenkan_prev, kijun_prev, tenkan_last, kijun_last,
+        price_last, span_a_last, span_b_last, chikou_last
+    ]
     if any(pd.isna(x) for x in numeric_vals):
+        logger.warning("(Ichimoku) NaN in values => HOLD")
         return "HOLD"
 
-    # Señales 1) Cruce Tenkan-Kijun
+    # Signals
     bullish_cross = (tenkan_prev < kijun_prev) and (tenkan_last > kijun_last)
     bearish_cross = (tenkan_prev > kijun_prev) and (tenkan_last < kijun_last)
 
-    # 2) Precio vs. Nube
     top_cloud = max(span_a_last, span_b_last)
     bot_cloud = min(span_a_last, span_b_last)
     if price_last > top_cloud:
@@ -148,7 +163,6 @@ def run_strategy(data_json: str, params: dict) -> str:
     else:
         price_vs_cloud = "within"
 
-    # 3) Color de la nube
     if span_a_last > span_b_last:
         cloud_color = "bullish"
     elif span_a_last < span_b_last:
@@ -156,17 +170,16 @@ def run_strategy(data_json: str, params: dict) -> str:
     else:
         cloud_color = "neutral"
 
-    # 4) Chikou vs. precio de hace 'displacement' velas
-    price_26_ago_idx = last_idx - displacement
-    if price_26_ago_idx >= 0:
-        price_26_ago = df.at[price_26_ago_idx, "closing_price_usd"]
-        chikou_bullish = chikou_last > price_26_ago
-        chikou_bearish = chikou_last < price_26_ago
+    # Chikou vs price 'displacement' candles ago
+    price_ago_idx = last_idx - displacement
+    if price_ago_idx >= 0:
+        price_ago = df.at[price_ago_idx, "closing_price_usd"]
+        chikou_bullish = chikou_last > price_ago
+        chikou_bearish = chikou_last < price_ago
     else:
         chikou_bullish = False
         chikou_bearish = False
 
-    # Calcular puntuaciones para señales bullish y bearish
     bullish_score = 0
     if bullish_cross:
         bullish_score += 1
@@ -187,7 +200,6 @@ def run_strategy(data_json: str, params: dict) -> str:
     if chikou_bearish:
         bearish_score += 1
 
-    # Determinar la señal calculada
     if bullish_score >= 3 and bearish_score < 3:
         new_signal = "BUY"
     elif bearish_score >= 3 and bullish_score < 3:
@@ -195,10 +207,12 @@ def run_strategy(data_json: str, params: dict) -> str:
     else:
         new_signal = "HOLD"
 
-    # Lógica de estado persistente: solo se retorna una orden si hay cambio de señal
-    if new_signal in ["BUY", "SELL"] and new_signal != state.get("last_signal", "HOLD"):
+    # Update state if signal changes to BUY/SELL
+    if new_signal in ["BUY", "SELL"] and new_signal != last_signal:
+        logger.info(f"(Ichimoku) Signal changed from {last_signal} to {new_signal}")
         state["last_signal"] = new_signal
         save_state(state)
         return new_signal
     else:
+        logger.info(f"(Ichimoku) No signal change => still {last_signal}")
         return "HOLD"

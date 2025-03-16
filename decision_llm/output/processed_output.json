@@ -1,0 +1,19 @@
+[
+  {
+    "analysis": "Bearish MACD crossover with neutral RSI. Partial profit-taking advised.",
+    "action": "DIRECT_ORDER",
+    "side": "SELL",
+    "size": 0.05,
+    "asset": "BTC"
+  },
+  {
+    "analysis": "Activating RSI strategy for trend confirmation.",
+    "action": "USE_STRATEGY",
+    "strategy_name": "RSI",
+    "params": {
+      "period": 14,
+      "overbought": 70,
+      "oversold": 30
+    }
+  }
+]

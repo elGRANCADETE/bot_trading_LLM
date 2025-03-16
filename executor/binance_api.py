@@ -1,6 +1,7 @@
 # tfg_bot_trading/executor/binance_api.py
 
 import os
+import pandas as pd
 import logging
 from dotenv import load_dotenv
 from binance.client import Client
@@ -37,6 +38,43 @@ def connect_binance_testnet() -> Client:
         logging.info("Successfully connected to Binance Testnet.")
     except Exception as e:
         logging.error(f"Error pinging Binance Testnet: {e}")
+        raise e
+    
+    return client
+
+def connect_binance_production() -> Client:
+    """
+    Connects to Binance production (live) using the API credentials specified in the environment variables.
+
+    Retrieves the API key and secret from the environment and creates a Binance Client in production mode.
+    It then performs a ping to ensure the connection is working.
+
+    Returns:
+        Client: A Binance Client instance connected to the real (production) Binance environment.
+
+    Raises:
+        ValueError: If the API credentials are not found in the environment variables.
+        Exception: If the ping to Binance fails.
+    """
+    import os
+    import logging
+    from binance.client import Client
+
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+
+    if not api_key or not api_secret:
+        raise ValueError("No BINANCE_API_KEY/BINANCE_API_SECRET credentials found in the .env file")
+
+    # testnet=False indica que usaremos la API real de Binance
+    client = Client(api_key, api_secret, testnet=False)
+
+    # Verificar la conexión haciendo ping a Binance
+    try:
+        client.ping()
+        logging.info("Successfully connected to Binance production.")
+    except Exception as e:
+        logging.error(f"Error pinging Binance production: {e}")
         raise e
     
     return client
@@ -133,3 +171,48 @@ def cancel_all_open_orders(client: Client, symbol: str = "BTCUSDT") -> None:
     for order in orders:
         order_id = order["orderId"]
         cancel_order(client, symbol, order_id)
+
+def fetch_klines_df(client: Client, symbol: str, interval: str, lookback: str) -> pd.DataFrame:
+    """
+    Fetches historical klines (candlestick data) from Binance (either testnet or mainnet) 
+    and returns it as a DataFrame.
+
+    :param client: binance.client.Client (already connected).
+    :param symbol: e.g., "BTCUSDT".
+    :param interval: e.g., Client.KLINE_INTERVAL_4HOUR.
+    :param lookback: e.g., "60 days ago UTC" or "30 hours ago UTC".
+    :return: pd.DataFrame with the following columns:
+        ['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', ...]
+    """
+    logging.info(f"Fetching klines for {symbol}, interval={interval}, lookback={lookback}")
+    klines = client.get_historical_klines(symbol, interval, lookback)
+
+    if not klines:
+        logging.warning("No klines returned.")
+        return pd.DataFrame()  # Return an empty DataFrame if no data is available
+
+    # Construct a DataFrame from the retrieved klines
+    df = pd.DataFrame(klines, columns=[
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
+    ])
+
+    # Convert relevant columns to numeric types for proper analysis
+    numeric_cols = ["open", "high", "low", "close", "volume",
+                    "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume"]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")  # Convert to numbers, handling errors safely
+
+    # Convert timestamps from milliseconds to readable datetime format
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
+
+    # (Optional) You can rename columns for clarity if needed
+    # df.rename(columns={
+    #   "open_time": "timestamp",
+    #   "close": "closing_price_usd",
+    #   ...
+    # }, inplace=True)
+
+    return df

@@ -495,46 +495,6 @@ def get_executive_summary(data: Dict[str, Any]) -> str:
     
     return " ".join(summary)
 
-def generate_output_json(data: Dict[str, Any]) -> str:
-    """
-    Convert the provided data dictionary into a formatted JSON string.
-    
-    This function serializes the input dictionary into a JSON-formatted string with a 4-space
-    indentation. It ensures that special characters are preserved by setting ensure_ascii to False.
-    
-    Parameters:
-        data (Dict[str, Any]): A dictionary containing the data to be converted into JSON.
-        
-    Returns:
-        str: A JSON-formatted string representation of the input data.
-             If serialization fails due to non-serializable objects, the function logs the error
-             and returns an empty JSON object "{}".
-    """
-    try:
-        return json.dumps(data, indent=4, ensure_ascii=False)
-    except TypeError as e:
-        logging.error(f"Error generating JSON: {e}")
-        return "{}"
-
-def validate_json_structure(data: dict) -> bool:
-    """
-    Validates the structure of the generated JSON.
-
-    Parameters:
-        data (dict): The data dictionary to validate.
-
-    Returns:
-        bool: True if JSON is valid, False otherwise.
-    """
-    try:
-        json_string = json.dumps(data)
-        json.loads(json_string)
-        logging.info("JSON structure is valid.")
-        return True
-    except json.JSONDecodeError as e:
-        logging.error(f"JSON validation error: {e}")
-        return False
-
 def get_custom_moving_averages(df: pd.DataFrame, windows: Dict[str, int]) -> Dict[str, float]:
     """
     Calculates custom moving averages for specified window sizes.
@@ -659,3 +619,51 @@ def get_multi_timeframe_analysis(exchange) -> Dict[str, Any]:
         analysis_result["weekly_analysis"] = {}
 
     return analysis_result
+
+def generate_output_json(data: Dict[str, Any]) -> str:
+    """
+    Convert the provided data dictionary into a formatted JSON string.
+    
+    This function serializes the input dictionary into a JSON-formatted string with a 4-space
+    indentation. It ensures that special characters are preserved by setting ensure_ascii to False.
+    
+    Parameters:
+        data (Dict[str, Any]): A dictionary containing the data to be converted into JSON.
+        
+    Returns:
+        str: A JSON-formatted string representation of the input data.
+             If serialization fails due to non-serializable objects, the function logs the error
+             and returns an empty JSON object "{}".
+    """
+    try:
+        return json.dumps(data, indent=4, ensure_ascii=False, default=default_converter)
+    except TypeError as e:
+        logging.error(f"Error generating JSON: {e}")
+        return "{}"
+
+def validate_json_structure(data: dict) -> bool:
+    """
+    Validates the structure of the generated JSON.
+
+    Parameters:
+        data (dict): The data dictionary to validate.
+
+    Returns:
+        bool: True if JSON is valid, False otherwise.
+    """
+    try:
+        json_string = json.dumps(data)
+        json.loads(json_string)
+        logging.info("JSON structure is valid.")
+        return True
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON validation error: {e}")
+        return False
+
+def default_converter(o):
+    import numpy as np
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    elif isinstance(o, (np.floating,)):
+        return float(o)
+    raise TypeError(f"Type {type(o)} not serializable")

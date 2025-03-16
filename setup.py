@@ -7,8 +7,8 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="tfg_bot_trading",  # Nombre en minúsculas y snake_case
     version="0.2.0",
-    author="Tu Nombre",
-    author_email="tu@email.com",
+    author="Jesus Munoz Barrios",
+    author_email="chechumunozbarrios@gmail.com",
     description="Bot de trading automatizado con análisis de mercado y noticias",
     long_description=long_description,
     long_description_content_type="text/markdown",

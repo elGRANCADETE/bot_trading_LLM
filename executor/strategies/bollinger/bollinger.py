@@ -1,9 +1,15 @@
+# tfg_bot_trading/executor/strategies/bollinger/bollinger.py
+
 import json
 import logging
 import pandas as pd
 import numpy as np
 
-# Configure logger for debugging and error messages
+from binance.client import Client
+# Ensure that binance_api.py includes:
+#   connect_binance_production() and fetch_klines_df(...)
+from executor.binance_api import connect_binance_production, fetch_klines_df
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 if not logger.hasHandlers():
@@ -13,91 +19,81 @@ if not logger.hasHandlers():
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-def calculate_bollinger_bands(df: pd.DataFrame, period: int, stddev: float) -> pd.DataFrame:
+def run_strategy(_ignored_data_json: str, params: dict) -> str:
     """
-    Calculate Bollinger bands for the given DataFrame.
-    Adds new columns: 'ma', 'std', 'upper', 'lower'.
-    """
-    # Calculate moving average and standard deviation with a minimum period requirement
-    df["ma"] = df["closing_price_usd"].rolling(window=period, min_periods=period).mean()
-    df["std"] = df["closing_price_usd"].rolling(window=period, min_periods=period).std()
-    
-    # Check for valid values (NaN check)
-    if pd.isna(df["ma"].iloc[-1]) or pd.isna(df["std"].iloc[-1]):
-        logger.warning("Not enough data to compute Bollinger bands (NaN detected in rolling calculations).")
-        return df
+    Bollinger Bands strategy that ignores the data_json and fetches candlesticks directly
+    from Binance Production.
 
-    # Compute upper and lower bands
-    df["upper"] = df["ma"] + stddev * df["std"]
-    df["lower"] = df["ma"] - stddev * df["std"]
-    return df
+    Expected parameters in 'params':
+      - period (int): window size for Bollinger calculation (default 20)
+      - stddev (float): number of standard deviations (default 2.0)
 
-def run_strategy(data_json: str, params: dict) -> str:
-    """
-    Bollinger Bands Strategy:
-      - params = { "period": 20, "stddev": 2 }
-      - Computes upper and lower bands.
-      - If the price closes above the upper band => SELL,
-        if it closes below the lower band => BUY, otherwise => HOLD.
+    Logic:
+      1) Connect to Binance Production.
+      2) Download ~100 days of 4h candlesticks for BTCUSDT.
+      3) Calculate Bollinger bands: MA ± stddev * STD.
+      4) If the price closes above the upper band => SELL
+         If the price closes below the lower band => BUY
+         Otherwise => HOLD
     """
     period = params.get("period", 20)
-    stddev = params.get("stddev", 2)
+    stddev = params.get("stddev", 2.0)
 
-    # Parse JSON safely
+    # 1) Connection to Binance Production
     try:
-        data_dict = json.loads(data_json)
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decoding error: {e}")
-        return "HOLD"
-
-    prices = data_dict.get("historical_data", {}).get("historical_prices", [])
-    if not prices:
-        logger.warning("No price data found.")
-        return "HOLD"
-
-    try:
-        df = pd.DataFrame(prices)
+        client = connect_binance_production()
     except Exception as e:
-        logger.error(f"Error converting price data to DataFrame: {e}")
-        return "HOLD"
-    
-    # If available, sort by date for chronological order
-    if "date" in df.columns:
-        try:
-            df = df.sort_values("date").reset_index(drop=True)
-        except Exception as e:
-            logger.error(f"Error sorting DataFrame by date: {e}")
-            return "HOLD"
-    
-    if "closing_price_usd" not in df.columns:
-        logger.error("Required column 'closing_price_usd' not found.")
-        return "HOLD"
-    
-    # Ensure there is enough data for the rolling calculations
-    if len(df) < period:
-        logger.warning(f"Insufficient data: {len(df)} data points available, required: {period}.")
-        return "HOLD"
-    
-    # Calculate Bollinger Bands using the modular function
-    df = calculate_bollinger_bands(df, period, stddev)
-    
-    # Check for valid rolling calculation results
-    if pd.isna(df["ma"].iloc[-1]) or pd.isna(df["std"].iloc[-1]):
-        logger.warning("Rolling calculations resulted in NaN values.")
+        logger.error(f"(Bollinger) Error connecting to Binance Production: {e}")
         return "HOLD"
 
-    last_close = df["closing_price_usd"].iloc[-1]
-    last_upper = df["upper"].iloc[-1]
-    last_lower = df["lower"].iloc[-1]
-    
-    logger.debug(f"Last Close: {last_close}, Upper Band: {last_upper}, Lower Band: {last_lower}")
-    
+    # 2) Download ~100 days of 4h candlesticks
+    try:
+        df_klines = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+        if df_klines.empty:
+            logger.warning("(Bollinger) No candlesticks obtained => HOLD")
+            return "HOLD"
+    except Exception as e:
+        logger.error(f"(Bollinger) Error downloading candlesticks: {e}")
+        return "HOLD"
+
+    if len(df_klines) < period:
+        logger.warning(f"(Bollinger) Insufficient candlesticks => need {period}, only have {len(df_klines)} => HOLD")
+        return "HOLD"
+
+    # 3) Convert to DataFrame with relevant columns
+    df = df_klines.rename(columns={
+        "open_time": "date",
+        "high": "high_usd",
+        "low": "low_usd",
+        "close": "closing_price_usd"
+    }).sort_values("date").reset_index(drop=True)
+
+    # 4) Calculation of Bollinger bands
+    df["ma"] = df["closing_price_usd"].rolling(window=period, min_periods=period).mean()
+    df["std"] = df["closing_price_usd"].rolling(window=period, min_periods=period).std()
+
+    # Validate that there is data in the last row
+    if pd.isna(df["ma"].iloc[-1]) or pd.isna(df["std"].iloc[-1]):
+        logger.warning("(Bollinger) Insufficient data in the last row => HOLD")
+        return "HOLD"
+
+    df["upper"] = df["ma"] + (stddev * df["std"])
+    df["lower"] = df["ma"] - (stddev * df["std"])
+
+    # Last value of close, upper and lower
+    last_close = float(df["closing_price_usd"].iloc[-1])
+    last_upper = float(df["upper"].iloc[-1])
+    last_lower = float(df["lower"].iloc[-1])
+
+    logger.debug(f"(Bollinger) Last close: {last_close}, upper: {last_upper}, lower: {last_lower}")
+
+    # 5) Decide the signal
     if last_close > last_upper:
-        logger.info("Signal: SELL (price above upper band).")
+        logger.info("(Bollinger) SELL => price above the upper band")
         return "SELL"
     elif last_close < last_lower:
-        logger.info("Signal: BUY (price below lower band).")
+        logger.info("(Bollinger) BUY => price below the lower band")
         return "BUY"
     else:
-        logger.info("Signal: HOLD (price within bands).")
+        logger.info("(Bollinger) HOLD => price within the bands")
         return "HOLD"
