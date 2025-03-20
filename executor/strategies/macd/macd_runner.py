@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 MACD_STATE_FILE = os.path.join(os.path.dirname(__file__), "macd_state.json")
 
 def default_converter(o):
-    """Convierte tipos NumPy a nativos de Python para json.dump()."""
+    """Converts NumPy types to native Python types for json.dump()."""
     if isinstance(o, np.integer):
         return int(o)
     elif isinstance(o, np.floating):
@@ -28,8 +28,8 @@ def default_converter(o):
 
 def load_macd_state() -> Dict[str, Any]:
     """
-    Carga el estado persistente (p.ej. 'last_signal') para MACD.
-    Si no existe, se retorna un estado con last_signal='HOLD'.
+    Loads the persistent state (e.g. 'last_signal') for MACD.
+    If it does not exist, returns a state with last_signal='HOLD'.
     """
     if not os.path.exists(MACD_STATE_FILE):
         return {"last_signal": "HOLD"}
@@ -40,21 +40,21 @@ def load_macd_state() -> Dict[str, Any]:
         return {"last_signal": "HOLD"}
 
 def save_macd_state(state: Dict[str, Any]) -> None:
-    """Guarda el estado en macd_state.json."""
+    """Saves the state in macd_state.json."""
     try:
         with open(MACD_STATE_FILE, "w") as f:
             json.dump(state, f, default=default_converter)
     except Exception as e:
-        logger.error(f"[MACDRunner] Error al guardar estado: {e}")
+        logger.error(f"[MACDRunner] Error saving state: {e}")
 
 
 class MACDRunner(threading.Thread):
     """
-    Hilo que ejecuta la lógica de MACD de forma continua, descargando velas
-    y recalculando la señal en cada iteración.
+    Thread that continuously runs the MACD logic by downloading candles
+    and recalculating the signal on each iteration.
 
-    - Revisa cruces MACD vs. signal
-    - Si la señal cambia (BUY/SELL) vs. la anterior, se guarda en un estado
+    - Checks MACD vs. signal crossovers.
+    - If the signal changes (BUY/SELL) compared to the previous one, it is saved in a state.
     """
 
     def __init__(
@@ -70,14 +70,14 @@ class MACDRunner(threading.Thread):
         self.strategy_params = strategy_params
         self.interval_seconds = interval_seconds
         self.stop_event = threading.Event()
-        self.daemon = True  # Para que termine si el hilo principal muere
+        self.daemon = True  # So that it ends if the main thread dies
 
     def run(self):
-        logger.info(f"[MACDRunner] Iniciando hilo para '{self.strategy_name}'.")
+        logger.info(f"[MACDRunner] Starting thread for '{self.strategy_name}'.")
         try:
             self.client = connect_binance_production()
         except Exception as e:
-            logger.error(f"[MACDRunner] Error conectando a Binance Production: {e}")
+            logger.error(f"[MACDRunner] Error connecting to Binance Production: {e}")
             return
 
         while not self.stop_event.is_set():
@@ -92,11 +92,11 @@ class MACDRunner(threading.Thread):
                     "100 days ago UTC"
                 )
                 if df_klines.empty:
-                    logger.warning("[MACDRunner] No hay velas => omitiendo iteración.")
+                    logger.warning("[MACDRunner] No candles => skipping iteration.")
                 else:
                     new_signal = self._compute_macd_signal(df_klines, self.strategy_params)
 
-                    # Si la señal es BUY/SELL y difiere de la anterior, la persistimos
+                    # If the signal is BUY/SELL and different from the previous one, we persist it
                     if new_signal in ["BUY", "SELL"] and new_signal != last_signal:
                         logger.info(f"[MACDRunner] Signal changed from {last_signal} to {new_signal}")
                         state["last_signal"] = new_signal
@@ -107,20 +107,20 @@ class MACDRunner(threading.Thread):
                 time.sleep(self.interval_seconds)
 
             except Exception as e:
-                logger.error(f"[MACDRunner] Error en bucle: {e}")
-                # Se puede continuar el loop o abortar, aquí continuamos
+                logger.error(f"[MACDRunner] Error in loop: {e}")
+                # The loop can either continue or abort; here we continue
 
-        logger.info(f"[MACDRunner] Hilo '{self.strategy_name}' finalizado.")
+        logger.info(f"[MACDRunner] Thread '{self.strategy_name}' finished.")
 
     def _compute_macd_signal(self, df_klines: pd.DataFrame, params: Dict[str, Any]) -> str:
-        """Lógica interna para calcular MACD, igual que en macd.py pero en bucle."""
+        """Internal logic to calculate MACD, same as in macd.py but in a loop."""
         fast = params.get("fast", 12)
         slow = params.get("slow", 26)
         signal_p = params.get("signal", 9)
 
         needed = max(fast, slow, signal_p)
         if len(df_klines) < needed:
-            logger.warning("[MACDRunner] Velas insuficientes => HOLD")
+            logger.warning("[MACDRunner] Insufficient candles => HOLD")
             return "HOLD"
 
         df = df_klines.rename(columns={
@@ -136,7 +136,7 @@ class MACDRunner(threading.Thread):
         df["signal"] = df["macd"].ewm(span=signal_p, adjust=False).mean()
 
         if pd.isna(df["macd"].iloc[-1]) or pd.isna(df["signal"].iloc[-1]):
-            logger.warning("[MACDRunner] MACD o signal es NaN => HOLD")
+            logger.warning("[MACDRunner] MACD or signal is NaN => HOLD")
             return "HOLD"
 
         prev_macd = df["macd"].iloc[-2]
@@ -144,7 +144,7 @@ class MACDRunner(threading.Thread):
         last_macd = df["macd"].iloc[-1]
         last_signal = df["signal"].iloc[-1]
 
-        # Reglas de decisión
+        # Decision rules
         if prev_macd < prev_signal and last_macd > last_signal:
             return "BUY"
         elif prev_macd > prev_signal and last_macd < last_signal:
@@ -153,5 +153,5 @@ class MACDRunner(threading.Thread):
             return "HOLD"
 
     def stop(self):
-        """Ordena al hilo que se detenga."""
+        """Commands the thread to stop."""
         self.stop_event.set()

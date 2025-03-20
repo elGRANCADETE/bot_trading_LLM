@@ -9,7 +9,10 @@ from . import data_fetcher, indicators, analysis, output
 from .analysis import calc_ichimoku_robust
 
 # Configure basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s'
+)
 
 def get_data(exchange):
     """

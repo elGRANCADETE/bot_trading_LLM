@@ -115,12 +115,8 @@ def process_multiple_decisions(
 ) -> Optional[dict]:
     """
     Processes multiple trading decisions in a single cycle.
-    Discards any previous open position (from a previous LLM cycle)
-    so that only the new decisions of this cycle are considered.
-    
-    Returns the final updated position (or None if it was closed).
+    Discards any previous open position from a prior LLM cycle so only new decisions are considered.
     """
-    # Discard any previous position from earlier cycles
     new_position = None
 
     for idx, decision in enumerate(decisions, start=1):
@@ -133,7 +129,7 @@ def process_multiple_decisions(
         current_price = get_current_price_from_data(data_json)
 
         if action == "HOLD":
-            logging.info("LLM => action=HOLD => no changes to position.")
+            logging.info("LLM => action=HOLD => no changes.")
 
         elif action == "DIRECT_ORDER":
             side = decision.get("side", "HOLD").upper()
@@ -146,44 +142,51 @@ def process_multiple_decisions(
                     order_id = o["orderId"]
                     ok = cancel_order(client, "BTCUSDT", order_id)
                     if ok:
-                        logging.info(f"Canceled conflicting open order => {o}")
+                        logging.debug(f"Canceled conflicting open order => {o}")
                     else:
                         logging.warning(f"Could NOT cancel conflicting open order => {o}")
 
             if side == "BUY":
                 resp = place_order(client, "BTCUSDT", "BUY", size)
-                if resp:
+                if resp and resp.get("status") == "FILLED":
+                    fill_price = "N/A"
+                    fills = resp.get("fills", [])
+                    if fills:
+                        fill_price = fills[0].get("price", "N/A")
+                    logging.info(f"BUY FILLED: {size} BTC at ~{fill_price} USDT")
+                    logging.debug(f"Order details: {resp}")
+
                     from datetime import datetime, timezone
                     now_utc = datetime.now(timezone.utc)
-                    # Discard any previous position; save the new BUY position
                     new_position = {
                         "side": "BUY",
                         "size": size,
                         "entry_price": current_price,
                         "timestamp": now_utc
                     }
-                    logging.info(f"BUY => Opened new position at {current_price}, size={size}")
                 else:
                     logging.warning("BUY order failed => no changes.")
 
             elif side == "SELL":
-                partial_size = float(decision.get("size", 0.01))
-                # Execute the SELL order without relying on an existing position
-                resp = place_order(client, "BTCUSDT", "SELL", partial_size)
-                if resp:
+                resp = place_order(client, "BTCUSDT", "SELL", size)
+                if resp and resp.get("status") == "FILLED":
+                    fill_price = "N/A"
+                    fills = resp.get("fills", [])
+                    if fills:
+                        fill_price = fills[0].get("price", "N/A")
+                    logging.info(f"SELL FILLED: {size} BTC at ~{fill_price} USDT")
+                    logging.debug(f"Order details: {resp}")
+
                     if new_position and new_position.get("side") == "BUY":
-                        # If a BUY position was opened in this cycle, reduce or close it
-                        sell_amount = min(new_position["size"], partial_size)
+                        sell_amount = min(new_position["size"], size)
                         remaining = new_position["size"] - sell_amount
                         if remaining <= 1e-8:
                             new_position = None
-                            logging.info("Position closed after SELL order.")
+                            logging.info("Position closed after SELL.")
                         else:
                             new_position["size"] = remaining
                             logging.info(f"Position reduced => new size = {remaining:.5f} BTC.")
                     else:
-                        # Execute SELL without an existing position
-                        logging.info("SELL order executed without an existing position (ignoring previous state).")
                         new_position = None
                 else:
                     logging.warning("SELL order failed => no changes.")
@@ -191,21 +194,18 @@ def process_multiple_decisions(
             else:
                 logging.info(f"DIRECT_ORDER side '{side}' unknown => ignoring changes.")
 
-            # Save or delete the position state as appropriate
             if new_position is not None:
                 save_position_state(new_position)
             else:
                 if os.path.exists(POSITION_STATE_FILE):
                     os.remove(POSITION_STATE_FILE)
 
-        elif action == "USE_STRATEGY":
+        elif action == "STRATEGY":
             raw_name = decision.get("strategy_name", "")
             strat_params = decision.get("params", {})
-
-            # Normalize the parameters using the centralized function
             strat_params = normalize_strategy_params(strat_params)
 
-            logging.info(f"USE_STRATEGY => '{raw_name}', params={strat_params}")
+            logging.info(f"STRATEGY => '{raw_name}', params={strat_params}")
 
             strategy_path = STRATEGY_REGISTRY.get(raw_name.strip().lower())
             if not strategy_path:
@@ -247,7 +247,7 @@ def process_multiple_decisions(
                     logging.warning("SELL order from strategy failed => keeping old position.")
 
             else:
-                logging.info(f"Strategy decision '{strat_decision}' => no changes to position.")
+                logging.info(f"Strategy decision '{strat_decision}' => no changes.")
 
             if new_position is not None:
                 save_position_state(new_position)

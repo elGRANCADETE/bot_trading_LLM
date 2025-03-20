@@ -88,6 +88,9 @@ def run_decision(
     """
     Calls the LLM with market data, news, wallet balances, and existing positions.
     The LLM can return multiple actions (direct orders and/or strategies) in a JSON array.
+    Additionally, it includes the previous decision stored in processed_output.json,
+    so that the LLM has context about what occurred in the previous cycle.
+    If the file is empty or does not exist, "None" is used.
     """
 
     # 1) Parse the data_json to retrieve the current price
@@ -97,13 +100,29 @@ def run_decision(
     except Exception:
         current_price = 0.0
 
-    # 2) Build the system message
+    # 2) Read the previous decision from processed_output.json (if exists)
+    output_dir = os.path.join(os.path.dirname(__file__), "output")
+    processed_path = os.path.join(output_dir, "processed_output.json")
+    if os.path.exists(processed_path):
+        try:
+            with open(processed_path, "r", encoding="utf-8") as f:
+                previous_decision = f.read().strip()
+            if not previous_decision:
+                previous_decision = "None"
+        except Exception as e:
+            logging.error(f"Error reading processed_output.json: {e}")
+            previous_decision = "None"
+    else:
+        previous_decision = "None"
+
+    # 3) Build the system message
     system_message: str = (
         f"You are an expert trading advisor.\n\n"
         f"You are managing a crypto wallet with these balances:\n"
         f"- BTC balance: {wallet_balances['BTC']} BTC\n"
         f"- USDT balance: {wallet_balances['USDT']} USDT\n\n"
         f"The current price of BTC is approximately {current_price} USDT.\n\n"
+        "IMPORTANT: Binance charges a 0.1% fee on each BUY or SELL trade. Factor this fee into your calculations so that the net position is valid.\n\n"
         "When you decide to BUY or SELL, you must think like a professional trader:\n"
         "1. Evaluate your available funds BEFORE deciding the size of the order.\n"
         "2. For a BUY:\n"
@@ -120,6 +139,7 @@ def run_decision(
 
     strategies_context = f"Context about Available Strategies:\n{AVAILABLE_STRATEGIES_INFO}\n"
 
+    # 4) Build the user prompt including previous decision context
     user_prompt: str = f"""
 {strategies_context}
 
@@ -132,6 +152,7 @@ Relevant news:
 Wallet balances: {wallet_balances}
 Current positions: {current_positions if current_positions else "None"}
 Hours since last trade: {hours_since_last_trade if hours_since_last_trade else 0}
+Previous decision: {previous_decision}
 
 Return ONLY a JSON array of decisions. Example:
 [
@@ -144,7 +165,7 @@ Return ONLY a JSON array of decisions. Example:
   }},
   {{
     "analysis": "We will now apply an RSI strategy.",
-    "action": "USE_STRATEGY",
+    "action": "STRATEGY",
     "strategy_name": "RSI",
     "params": {{
       "period": 14,
@@ -156,7 +177,7 @@ Return ONLY a JSON array of decisions. Example:
 NO extra text outside the JSON.
 """
 
-    # 3) Create the input folder and save the prompt there
+    # 5) Create the input folder and save the prompt there
     input_dir = os.path.join(os.path.dirname(__file__), "input")
     os.makedirs(input_dir, exist_ok=True)
     prompt_path = os.path.join(input_dir, "prompt_input.txt")
@@ -166,31 +187,30 @@ NO extra text outside the JSON.
         f.write("\n\nUSER PROMPT:\n")
         f.write(user_prompt)
 
-    # 4) Call the LLM
+    # 6) Call the LLM
     raw_response: str = call_llm_api(
         prompt=user_prompt,
         system_message=system_message,
         model_name="deepseek/deepseek-r1"
     )
 
-    # 5) Ensure the output folder exists
-    output_dir = os.path.join(os.path.dirname(__file__), "output")
+    # 7) Ensure the output folder exists
     os.makedirs(output_dir, exist_ok=True)
 
-    # 6) Save the raw output
+    # 8) Save the raw output
     raw_path = os.path.join(output_dir, "raw_output.txt")
     with open(raw_path, "w", encoding="utf-8") as f:
         f.write(raw_response)
 
-    # 7) Extract the first valid JSON array from the LLM response
+    # 9) Extract the first valid JSON array from the LLM response
     processed_text = extract_first_json_array(raw_response)
     if not processed_text:
         processed_text = '[{"analysis":"No valid JSON array found","action":"HOLD"}]'
 
-    # 8) Evaluate arithmetic expressions in the JSON text
+    # 10) Evaluate arithmetic expressions in the JSON text
     processed_text = evaluate_arithmetic_expressions_in_json(processed_text)
 
-    # 9) Parse the resulting JSON
+    # 11) Parse the resulting JSON
     try:
         decision_list = json.loads(processed_text)
     except Exception as e:
@@ -202,9 +222,8 @@ NO extra text outside the JSON.
             }
         ]
 
-    # 10) Save the processed decisions in processed_output.json
-    processed_path = os.path.join(output_dir, "processed_output.json")
-    with open(processed_path, "w", encoding="utf-8") as f:
+    # 12) Save the processed decisions in processed_output.json
+    with open(os.path.join(output_dir, "processed_output.json"), "w", encoding="utf-8") as f:
         json.dump(decision_list, f, indent=2)
 
     return decision_list
@@ -235,7 +254,7 @@ def call_llm_api(prompt: str, system_message: str, model_name: str) -> str:
             temperature=0.7,
             stream=False
         )
-        logging.info(f"OpenRouter response: {response}")
+        logging.debug(f"OpenRouter response: {response}")
 
         # Check content vs. reasoning
         message = response.choices[0].message

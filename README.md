@@ -39,31 +39,33 @@ pip install -e .
 
 ## 🏗️ **Project Structure**
 tfg_bot_trading/
-├── orchestrator.py               # Punto de entrada principal que orquesta todo el bot (loop principal)
-├── data_collector/               # Módulo para recolectar y analizar datos de mercado
-│   ├── main.py                   # Lógica principal de recopilación de datos
-│   ├── data_fetcher.py           # Obtención de datos de mercado (APIs, webs, etc.)
-│   ├── indicators.py             # Cálculo de indicadores técnicos (SMA, RSI, MACD, etc.)
-│   └── analysis.py               # Análisis de patrones y tendencias
-├── news_collector/               # Módulo para recolectar y procesar noticias y sentimiento
-│   ├── main.py                   # Lógica principal de la parte de noticias
-│   ├── perplexity_api.py         # Integración con la API de Perplexity (o similar)
-│   └── sentiment.py              # Clasificación/análisis de sentimiento de noticias
-├── decision_llm/                 # Módulo de toma de decisiones usando modelos de lenguaje (LLM)
-│   ├── main.py                   # Código principal que invoca al LLM
-│   └── output/                   # Carpeta para guardar raw_output.txt y processed_output.json del LLM
-└── executor/                     # Ejecución de órdenes y gestión de estrategias
-    ├── trader_executor.py        # Lógica de alto nivel para colocar órdenes en Binance
-    ├── binance_api.py            # Funciones auxiliares para conectar con Binance (testnet/producción)
-    └── strategies/               # Diferentes estrategias de trading
-        ├── atr_stop/             # Estrategia ATR Stop
-        ├── bollinger/            # Estrategia Bollinger Bands
-        ├── ichimoku/             # Estrategia Ichimoku
-        ├── ma_crossover/         # Estrategia de cruce de Medias Móviles (MA Crossover)
-        ├── macd/                 # Estrategia MACD
-        ├── range_trading/        # Estrategia de trading en rango
-        ├── rsi/                  # Estrategia RSI
-        └── stochastic/           # Estrategia Stochastic Oscillator
+├── orchestrator.py               # Main entry point orchestrating the entire bot (main loop)
+├── data_collector/               # Module for gathering and analyzing market data
+│   ├── main.py                   # Main logic for data collection
+│   ├── data_fetcher.py           # Market data fetching (APIs, websites, etc.)
+│   ├── indicators.py             # Calculation of technical indicators (SMA, RSI, MACD, etc.)
+│   └── analysis.py               # Pattern and trend analysis
+├── news_collector/               # Module for gathering and processing news and sentiment
+│   ├── main.py                   # Main logic for the news component
+│   ├── perplexity_api.py         # Integration with Perplexity API (or similar)
+│   └── sentiment.py              # Classification/analysis of news sentiment
+├── decision_llm/                 # Decision-making module using language models (LLM)
+│   ├── main.py                   # Main code that invokes the LLM
+│   ├── output/                   # Folder to store raw_output.txt and processed_output.json from the LLM
+│   └── input/                   # Folder to store prompt_input.txt
+└── executor/                     # Order execution and strategy management
+    ├── trader_executor.py        # High-level logic for placing orders on Binance
+    ├── binance_api.py            # Helper functions to connect with Binance (testnet/production)
+    └── strategies/               # Various trading strategies
+        ├── atr_stop/             # ATR Stop Strategy
+        ├── bollinger/            # Bollinger Bands Strategy
+        ├── ichimoku/             # Ichimoku Strategy
+        ├── ma_crossover/         # Moving Average Crossover Strategy
+        ├── macd/                 # MACD Strategy
+        ├── range_trading/        # Range Trading Strategy
+        ├── rsi/                  # RSI Strategy
+        └── stochastic/           # Stochastic Oscillator Strategy
+
 
 Each strategy is organized into its own folder to facilitate maintenance and scalability.
 
