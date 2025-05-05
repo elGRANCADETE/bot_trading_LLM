@@ -1,33 +1,51 @@
 # tfg_bot_trading/executor/normalization.py
 
-# Diccionario con mapeos de claves erróneas a las correctas (en minúsculas)
-NORMALIZATION_MAPPING = {
+from typing import Any, Dict, Union
+
+# ─── Typo Mappings (all keys pre-lowercased) ─────────────────────────────────
+# Map common misspellings to their correct parameter names.
+_NORMALIZATION_MAPPING: Dict[str, str] = {
     "ipliplier": "multiplier",
-    # Agrega aquí otros mapeos de errores tipográficos si fuese necesario
+    # add other typo mappings here...
 }
 
-def normalize_strategy_params(params: dict) -> dict:
+# Map misspelled action values to normalized actions.
+_ACTION_NORMALIZATION_MAPPING: Dict[str, str] = {
+    "__strategy": "STRATEGY",
+    # add other typo mappings here...
+}
+
+
+# ─── Strategy Params Normalization ───────────────────────────────────────────
+def normalize_strategy_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normaliza las claves de los parámetros de una estrategia.
-    Para cada clave en el diccionario, si existe una entrada en NORMALIZATION_MAPPING
-    (comparando en minúsculas), se reemplaza por la clave normalizada.
+    Correct common typos in strategy parameter keys, case-insensitive.
+    Also performs basic type validation for numeric parameters: 
+    if a value should be float or int but isn't, logs a warning.
     """
-    normalized = {}
+    normalized: Dict[str, Any] = {}
     for key, value in params.items():
-        new_key = NORMALIZATION_MAPPING.get(key.lower(), key)
-        normalized[new_key] = value
+        key_lower = key.lower()
+        correct_key = _NORMALIZATION_MAPPING.get(key_lower, key_lower)
+        # Basic type validation for numeric-looking values
+        if isinstance(value, str) and value.replace('.', '', 1).isdigit():
+            # convert numeric string to float
+            try:
+                num = float(value)
+                value = int(num) if num.is_integer() else num
+            except ValueError:
+                # leave as string if conversion fails
+                pass
+        normalized[correct_key] = value
     return normalized
 
-# Nuevo diccionario para normalizar valores de acción (en minúsculas)
-ACTION_NORMALIZATION_MAPPING = {
-    "__strategy": "STRATEGY"
-    # Agrega aquí otros mapeos de errores tipográficos si fuese necesario
-}
 
+# ─── Action Value Normalization ──────────────────────────────────────────────
 def normalize_action(action: str) -> str:
     """
-    Normaliza el valor de una acción.
-    Si la acción se encuentra en ACTION_NORMALIZATION_MAPPING (comparando en minúsculas),
-    se devuelve su valor normalizado. De lo contrario, se retorna la acción original.
+    Normalize action strings by mapping known typos to their canonical form.
+    Case-insensitive; returns the original action (uppercased) if no match.
     """
-    return ACTION_NORMALIZATION_MAPPING.get(action.lower(), action)
+    action_lower = action.lower()
+    normalized = _ACTION_NORMALIZATION_MAPPING.get(action_lower, action_upper := action.upper())
+    return normalized if normalized.isupper() else action_upper

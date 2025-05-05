@@ -1,118 +1,170 @@
 # tfg_bot_trading/executor/strategies/rsi/rsi.py
 
 import logging
+from typing import Any, Dict, Literal
 import pandas as pd
-import numpy as np
-
+from pydantic import BaseModel, Field, ValidationError, ConfigDict, model_validator
+from tenacity import retry, stop_after_attempt, wait_exponential
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
+
 from executor.binance_api import connect_binance_production, fetch_klines_df
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+# ─── Logger Setup ───────────────────────────────────────────────────────────
+logger = logging.getLogger("RSI")
+logger.setLevel(logging.INFO)
 if not logger.hasHandlers():
     ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
+    ch.setLevel(logging.INFO)
+    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(fmt)
     logger.addHandler(ch)
 
-def compute_rsi(df: pd.DataFrame, period: int) -> float:
+# ─── Params Model ────────────────────────────────────────────────────────────
+class RSIParams(BaseModel):
     """
-    Calculates the RSI (Relative Strength Index) from a DataFrame that has the columns:
-    ['date', 'high_usd', 'low_usd', 'closing_price_usd'].
+    Parameters for RSI strategy.
+    """
+    model_config = ConfigDict(strict=True)
+    period: int = Field(14, ge=1, description="RSI lookback window")
+    overbought: float = Field(70.0, ge=0.0, le=100.0, description="Overbought threshold")
+    oversold: float = Field(30.0, ge=0.0, le=100.0, description="Oversold threshold")
+    timeframe: str = Field(default=Client.KLINE_INTERVAL_4HOUR, description="Candlestick interval")
 
-    Returns the final RSI as a float, or None if there is not enough data.
-    Uses a simple rolling average method for gains and losses.
+    @model_validator(mode='before')
+    def check_thresholds(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Ensure thresholds are valid: oversold < overbought.
+        """
+        ob = values.get("overbought")
+        os = values.get("oversold")
+        if os >= ob:
+            raise ValueError("'oversold' must be less than 'overbought'")
+        return values
+
+# ─── Helpers ───────────────────────────────────────────────────────────────────
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+def _connect_client() -> Client:
+    """
+    Connect to Binance Production client, with retry on transient errors.
+    
+    Returns:
+        Connected Binance Client instance.
+    
+    Raises:
+        Any exception from connect_binance_production if unrecoverable.
+    """
+    return connect_binance_production()
+
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+def _fetch_klines(client: Client, timeframe: str) -> pd.DataFrame:
+    """
+    Download historical candlestick data for BTCUSDT.
+    
+    Args:
+        client: Binance API client.
+        timeframe: Candlestick interval (e.g., '4h').
+    
+    Returns:
+        DataFrame of klines with columns
+        ['open_time','high','low','close',...].
+    
+    Raises:
+        ValueError: If no data is returned.
+        BinanceAPIException: On API-level errors.
+    """
+    df = fetch_klines_df(client, "BTCUSDT", timeframe, "60 days ago UTC")
+    if df.empty:
+        raise ValueError("Empty kline data")
+    return df
+
+# ─── Pure RSI Calculation ─────────────────────────────────────────────────────
+def compute_rsi_value(df: pd.DataFrame, period: int) -> float | None:
+    """
+    Compute RSI value from OHLC DataFrame.
+    
+    Args:
+        df: DataFrame with 'date', 'high_usd', 'low_usd', 'closing_price_usd'.
+        period: Lookback window for RSI calculation.
+    
+    Returns:
+        RSI value (0–100) or None if insufficient data.
     """
     if len(df) < period:
-        logger.warning(f"Not enough candles for RSI: {period} required, only {len(df)} available.")
+        logger.warning("Not enough candles for RSI: %d required, have %d", period, len(df))
         return None
 
-    data = df.copy()
-    data["change"] = data["closing_price_usd"].diff()
-    data["gain"] = data["change"].apply(lambda x: x if x > 0 else 0)
-    data["loss"] = data["change"].apply(lambda x: -x if x < 0 else 0)
+    # Prepare series of gains and losses
+    df = df.rename(columns={
+        'open_time': 'date',
+        'high': 'high_usd',
+        'low': 'low_usd',
+        'close': 'closing_price_usd'
+    })
+    df = df.sort_values('date').reset_index(drop=True)
+    delta = df['closing_price_usd'].diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
 
-    data["avg_gain"] = data["gain"].rolling(window=period, min_periods=period).mean()
-    data["avg_loss"] = data["loss"].rolling(window=period, min_periods=period).mean()
+    # Rolling averages
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
 
-    if pd.isna(data["avg_gain"].iloc[-1]) or pd.isna(data["avg_loss"].iloc[-1]):
-        logger.warning("RSI => NaN values at the end => insufficient data.")
+    # Check for NaN due to insufficient data
+    if avg_gain.iat[-1] is pd.NA or avg_loss.iat[-1] is pd.NA:
+        logger.warning("RSI avg_gain/loss NaN => insufficient data.")
         return None
 
-    if data["avg_loss"].iloc[-1] == 0:
+    # Handle divide-by-zero: if no losses, RSI=100
+    if avg_loss.iat[-1] == 0:
         return 100.0
 
-    rs = data["avg_gain"].iloc[-1] / data["avg_loss"].iloc[-1]
-    rsi_value = 100.0 - (100.0 / (1.0 + rs))
-    return rsi_value
+    rs = avg_gain.iat[-1] / avg_loss.iat[-1]
+    return 100.0 - (100.0 / (1.0 + rs))
 
-def run_strategy(_ignored_data_json: str, params: dict) -> str:
+# ─── Entrypoint ───────────────────────────────────────────────────────────────
+def run_strategy(_data_json: str, raw_params: Dict[str, Any]) -> Literal["BUY","SELL","HOLD"]:
     """
-    RSI Strategy that ignores the data_json and fetches OHLC data directly from Binance Production.
-
-    Expected parameters in 'params':
-      - period (int): RSI lookback window (default 14)
-      - overbought (float): RSI threshold for overbought (default 70)
-      - oversold (float): RSI threshold for oversold (default 30)
-      - timeframe (str): e.g. '4h' or Client.KLINE_INTERVAL_4HOUR, default is 4h
-
-    Returns:
-      - "BUY" if RSI < oversold
-      - "SELL" if RSI > overbought
-      - "HOLD" otherwise or on error
+    Single-run RSI strategy:
+      1. Validate parameters
+      2. Connect & fetch data
+      3. Compute RSI
+      4. Return BUY/SELL/HOLD
     """
-    period = params.get("period", 14)
-    overbought = params.get("overbought", 70.0)
-    oversold = params.get("oversold", 30.0)
-    timeframe = params.get("timeframe", Client.KLINE_INTERVAL_4HOUR)
-
-    logger.info(f"(RSI) Fetching candles from Binance Production, timeframe={timeframe}, ~60 days")
-
-    # 1) Connect to Binance Production
+    # 1) Validate parameters
     try:
-        client = connect_binance_production()
-    except Exception as e:
-        logger.error(f"(RSI) Error connecting to Binance Production => {e}")
+        params = RSIParams(**raw_params)
+    except ValidationError as e:
+        logger.error("Invalid RSI parameters: %s", e)
         return "HOLD"
 
-    # 2) Download ~60 days of 4h candles
+    # 2) Fetch data
     try:
-        df_klines = fetch_klines_df(client, "BTCUSDT", timeframe, "60 days ago UTC")
-        if df_klines.empty:
-            logger.warning("(RSI) No klines fetched => HOLD")
-            return "HOLD"
+        client = _connect_client()
+        df = _fetch_klines(client, params.timeframe)
+    except BinanceAPIException as e:
+        logger.error("Binance API error: %s", e)
+        return "HOLD"
+    except ValueError as e:
+        logger.warning("Data fetch warning: %s", e)
+        return "HOLD"
     except Exception as e:
-        logger.error(f"(RSI) Error fetching klines => {e}")
+        logger.error("Unexpected error fetching klines: %s", e)
         return "HOLD"
 
-    # 3) Prepare DataFrame
-    df = df_klines.rename(columns={
-        "open_time": "date",
-        "high": "high_usd",
-        "low": "low_usd",
-        "close": "closing_price_usd"
-    }).sort_values("date").reset_index(drop=True)
-
-    if len(df) < period:
-        logger.warning(f"(RSI) Not enough candles => need {period}, have {len(df)} => HOLD")
+    # 3) Compute RSI
+    rsi_val = compute_rsi_value(df, params.period)
+    if rsi_val is None:
         return "HOLD"
+    logger.debug(
+        "RSI=%.2f, oversold=%.2f, overbought=%.2f",
+        rsi_val, params.oversold, params.overbought
+    )
 
-    # 4) Compute RSI
-    rsi_value = compute_rsi(df, period)
-    if rsi_value is None:
-        logger.warning("(RSI) Could not calculate RSI => HOLD")
-        return "HOLD"
-
-    logger.debug(f"(RSI) RSI={rsi_value:.2f}, oversold={oversold}, overbought={overbought}")
-
-    # 5) Decision
-    if rsi_value < oversold:
-        logger.info("(RSI) RSI < oversold => BUY")
+    # 4) Decision
+    if rsi_val < params.oversold:
         return "BUY"
-    elif rsi_value > overbought:
-        logger.info("(RSI) RSI > overbought => SELL")
+    if rsi_val > params.overbought:
         return "SELL"
-    else:
-        logger.info("(RSI) RSI is neutral => HOLD")
-        return "HOLD"
+    return "HOLD"
+    

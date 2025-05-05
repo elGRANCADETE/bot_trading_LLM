@@ -3,105 +3,132 @@
 import os
 import json
 import logging
-import numpy as np
-import pandas as pd
-from binance.client import Client
+import threading
+from typing import Any, Dict, Literal
 
-# Ensure that binance_api.py includes:
-#   connect_binance_production() and fetch_klines_df(...)
+import pandas as pd
+from pydantic import BaseModel, Field, root_validator, ValidationError
+from tenacity import retry, stop_after_attempt, wait_exponential
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+
 from executor.binance_api import connect_binance_production, fetch_klines_df
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-if not logger.hasHandlers():
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+logger = logging.getLogger("MA Crossover")
+logger.setLevel(logging.INFO)
 
+# ─── State Persistence ─────────────────────────────────────────────────────────
+_MACROSS_STATE_FILE = os.path.join(os.path.dirname(__file__), "ma_crossover_state.json")
+_state_lock = threading.Lock()
 
-def run_strategy(_ignored_data_json: str, params: dict) -> str:
+def load_state() -> Dict[str, str]:
+    """Load last signal or return default if missing/corrupt."""
+    with _state_lock:
+        if os.path.exists(_MACROSS_STATE_FILE):
+            try:
+                return json.load(open(_MACROSS_STATE_FILE, "r"))
+            except Exception:
+                logger.warning("Corrupt MA Crossover state; resetting.")
+        return {"last_signal": "HOLD"}
+
+def save_state(state: Dict[str, str]) -> None:
+    """Atomically save state to JSON."""
+    with _state_lock:
+        tmp = _MACROSS_STATE_FILE + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp, _MACROSS_STATE_FILE)
+        except Exception as e:
+            logger.error("Failed to save MA Crossover state: %s", e)
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+# ─── Params Model ────────────────────────────────────────────────────────────
+class MACrossoverParams(BaseModel):
+    fast: int = Field(10, ge=1)
+    slow: int = Field(50, ge=1)
+
+    @root_validator
+    def check_slow_greater_fast(cls, values):
+        f, s = values.get("fast"), values.get("slow")
+        if s <= f:
+            raise ValueError("'slow' must be greater than 'fast'")
+        return values
+
+# ─── Data Fetch with Retry ────────────────────────────────────────────────────
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def _fetch_klines(client: Client) -> pd.DataFrame:
+    """Fetch 4h candlesticks; error if empty."""
+    df = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+    if df.empty:
+        raise ValueError("Empty kline data")
+    return df
+
+# ─── Pure Signal Computation ─────────────────────────────────────────────────
+def _compute_signal(df: pd.DataFrame, params: MACrossoverParams) -> Literal["BUY", "SELL", "HOLD"]:
     """
-    MA Crossover Strategy (single-run version) that ignores data_json and
-    downloads candlesticks directly from Binance Production.
-
-    Parameters in 'params':
-      - fast (int): size of the fast moving average (e.g., 10)
-      - slow (int): size of the slow moving average (e.g., 50)
-
-    Logic:
-      1) Connect to Binance Production.
-      2) Download ~100 days of 4h candlesticks for BTCUSDT.
-      3) Calculate fast and slow moving averages.
-      4) If the fast MA crosses above the slow MA => BUY
-         If the fast MA crosses below the slow MA => SELL
-         If there is no crossover => HOLD
+    Given OHLC DataFrame and validated params, return 'BUY', 'SELL' or 'HOLD'.
     """
-    # 1) Extract parameters
-    fast = params.get("fast", 10)
-    slow = params.get("slow", 50)
+    df = (
+        df.rename(columns={
+            "open_time": "date",
+            "high": "high_usd",
+            "low": "low_usd",
+            "close": "closing_price_usd"
+        })
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    ma_fast = df["closing_price_usd"].rolling(window=params.fast, min_periods=params.fast).mean()
+    ma_slow = df["closing_price_usd"].rolling(window=params.slow, min_periods=params.slow).mean()
 
-    if slow <= fast:
-        logger.warning("(MA Crossover) 'slow' should be greater than 'fast'; unusual configuration.")
+    if len(df) < params.slow or pd.isna(ma_fast.iat[-1]) or pd.isna(ma_slow.iat[-1]):
+        return "HOLD"
 
-    # 2) Connect to Binance Production
+    prev_fast, prev_slow = ma_fast.iat[-2], ma_slow.iat[-2]
+    last_fast, last_slow = ma_fast.iat[-1], ma_slow.iat[-1]
+
+    if prev_fast < prev_slow and last_fast > last_slow:
+        return "BUY"
+    if prev_fast > prev_slow and last_fast < last_slow:
+        return "SELL"
+    return "HOLD"
+
+# ─── Strategy Entrypoint ─────────────────────────────────────────────────────
+def run_strategy(_data_json: str, raw_params: Dict[str, Any]) -> Literal["BUY", "SELL", "HOLD"]:
+    """
+    Single-run MA Crossover:
+      1. Validate params
+      2. Fetch data
+      3. Compute signal
+      4. Persist new signal if changed
+    """
+    # 1) Validate parameters
+    try:
+        params = MACrossoverParams(**raw_params)
+    except ValidationError as e:
+        logger.error("Invalid MA Crossover parameters: %s", e)
+        return "HOLD"
+
+    # 2) Load last signal
+    state = load_state()
+    last = state.get("last_signal", "HOLD")
+
+    # 3) Fetch market data
     try:
         client = connect_binance_production()
-    except Exception as e:
-        logger.error(f"(MA Crossover) Error connecting to Binance Production: {e}")
+        df = _fetch_klines(client)
+    except (BinanceAPIException, ValueError) as e:
+        logger.error("Data fetch error: %s", e)
         return "HOLD"
 
-    # 3) Download ~100 days of 4h candlesticks
-    try:
-        df_klines = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
-        if df_klines.empty:
-            logger.warning("(MA Crossover) No candlesticks obtained => HOLD")
-            return "HOLD"
-    except Exception as e:
-        logger.error(f"(MA Crossover) Error downloading candlesticks: {e}")
-        return "HOLD"
+    # 4) Compute and persist if needed
+    new_signal = _compute_signal(df, params)
+    if new_signal in ("BUY", "SELL") and new_signal != last:
+        state["last_signal"] = new_signal
+        save_state(state)
+        logger.info("MA Crossover new signal: %s", new_signal)
+        return new_signal
 
-    # 4) Ensure there is enough data
-    if len(df_klines) < max(fast, slow):
-        logger.warning(f"(MA Crossover) Insufficient candlesticks => need {max(fast, slow)}, only have {len(df_klines)} => HOLD")
-        return "HOLD"
-
-    # 5) Build DataFrame
-    df = df_klines.rename(columns={
-        "open_time": "date",
-        "high": "high_usd",
-        "low": "low_usd",
-        "close": "closing_price_usd"
-    }).sort_values("date").reset_index(drop=True)
-
-    # Calculate moving averages
-    df["fast_ma"] = df["closing_price_usd"].rolling(window=fast, min_periods=fast).mean()
-    df["slow_ma"] = df["closing_price_usd"].rolling(window=slow, min_periods=slow).mean()
-
-    # Verify that the final moving averages are not NaN
-    if pd.isna(df["fast_ma"].iloc[-1]) or pd.isna(df["slow_ma"].iloc[-1]):
-        logger.warning("(MA Crossover) The last moving average is NaN => HOLD")
-        return "HOLD"
-
-    # 6) Detect crossover
-    prev_fast = df["fast_ma"].iloc[-2]
-    prev_slow = df["slow_ma"].iloc[-2]
-    last_fast = df["fast_ma"].iloc[-1]
-    last_slow = df["slow_ma"].iloc[-1]
-
-    logger.debug(f"(MA Crossover) prev_fast={prev_fast}, prev_slow={prev_slow}, "
-                 f"last_fast={last_fast}, last_slow={last_slow}")
-
-    # 7) Decision rules
-    # fast crosses above => BUY
-    if prev_fast < prev_slow and last_fast > last_slow:
-        logger.info("(MA Crossover) BUY => the fast MA crosses above the slow MA.")
-        return "BUY"
-    # fast crosses below => SELL
-    elif prev_fast > prev_slow and last_fast < last_slow:
-        logger.info("(MA Crossover) SELL => the fast MA crosses below the slow MA.")
-        return "SELL"
-    else:
-        logger.info("(MA Crossover) HOLD => no crossover detected.")
-        return "HOLD"
+    return "HOLD"

@@ -1,218 +1,163 @@
-# tfg_bot_trading/executor/binance_api.py
-
+from decimal import Decimal
 import os
-import pandas as pd
 import logging
-from dotenv import load_dotenv
+from typing import Optional, Mapping
+
+import pandas as pd
 from binance.client import Client
-from typing import Optional, List
+from binance.exceptions import BinanceAPIException
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-# Load environment variables from a .env file
-load_dotenv()
+# ─── Environment Configuration ───────────────────────────────────────────────
+# Load your API keys once at startup (e.g., via dotenv).
 
-def connect_binance_testnet() -> Client:
+# ─── Connection Helper with Retry ────────────────────────────────────────────
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10)
+)
+def connect_binance(testnet: bool = True) -> Client:
     """
-    Connects to Binance Testnet using the API credentials specified in the environment variables.
-    
-    Retrieves the API key and secret from the environment and creates a Binance Client in testnet mode.
-    It then performs a ping to ensure the connection is working.
-    
+    Create and verify a Binance Client, retrying on transient errors.
+
+    Args:
+        testnet: True → connect to testnet; False → production.
+
     Returns:
-        Client: A Binance Client instance connected to the testnet.
-        
+        Configured Binance Client.
+
     Raises:
-        ValueError: If the API credentials are not found in the environment variables.
-        Exception: If the ping to Binance Testnet fails.
+        EnvironmentError: Missing credentials.
+        BinanceAPIException: Ping failed after retries.
     """
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
-
     if not api_key or not api_secret:
-        raise ValueError("No BINANCE_API_KEY/BINANCE_API_SECRET credentials found in the .env file")
+        raise EnvironmentError("Missing BINANCE_API_KEY or BINANCE_API_SECRET")
 
-    client = Client(api_key, api_secret, testnet=True)
-
-    # Verify the connection by pinging Binance Testnet
+    client = Client(api_key, api_secret, testnet=testnet)
     try:
         client.ping()
-        logging.info("Successfully connected to Binance Testnet.")
-    except Exception as e:
-        logging.error(f"Error pinging Binance Testnet: {e}")
-        raise e
-    
+    except BinanceAPIException as e:
+        logging.error("Binance ping failed: %s", e)
+        raise
+    logging.info("Connected to Binance %s.", "testnet" if testnet else "production")
     return client
 
-def connect_binance_production() -> Client:
-    """
-    Connects to Binance production (live) using the API credentials specified in the environment variables.
-
-    Retrieves the API key and secret from the environment and creates a Binance Client in production mode.
-    It then performs a ping to ensure the connection is working.
-
-    Returns:
-        Client: A Binance Client instance connected to the real (production) Binance environment.
-
-    Raises:
-        ValueError: If the API credentials are not found in the environment variables.
-        Exception: If the ping to Binance fails.
-    """
-    import os
-    import logging
-    from binance.client import Client
-
-    api_key = os.getenv("BINANCE_API_KEY")
-    api_secret = os.getenv("BINANCE_API_SECRET")
-
-    if not api_key or not api_secret:
-        raise ValueError("No BINANCE_API_KEY/BINANCE_API_SECRET credentials found in the .env file")
-
-    # testnet=False indica que usaremos la API real de Binance
-    client = Client(api_key, api_secret, testnet=False)
-
-    # Verificar la conexión haciendo ping a Binance
-    try:
-        client.ping()
-        logging.info("Successfully connected to Binance production.")
-    except Exception as e:
-        logging.error(f"Error pinging Binance production: {e}")
-        raise e
-    
-    return client
-
+# ─── Order Execution with Retry ─────────────────────────────────────────────
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=5)
+)
 def place_order(
-    client: Client, 
-    symbol: str, 
-    side: str, 
-    quantity: float, 
+    client: Client,
+    symbol: str,
+    side: str,
+    quantity: float,
     order_type: str = "MARKET"
-) -> Optional[dict]:
+) -> Optional[Mapping[str, any]]:
     """
-    Sends an order to Binance Testnet using the provided client.
-    
-    This function creates an order for the specified symbol, side, quantity, and order type.
-    MARKET orders are executed nearly instantaneously, whereas LIMIT orders might remain open.
-    
-    Parameters:
-        client (Client): Binance Client instance.
-        symbol (str): Trading pair symbol (e.g., "BTCUSDT").
-        side (str): "BUY" or "SELL" (case-insensitive).
-        quantity (float): Amount to trade.
-        order_type (str): Type of order (default is "MARKET").
-    
-    Returns:
-        Optional[dict]: A dictionary with the order details if successful; otherwise, None.
-    """
-    try:
-        params = {
-            "symbol": symbol,
-            "side": side.upper(),
-            "type": order_type,
-            "quantity": quantity
-        }
+    Submit a BUY or SELL order, retrying on transient API errors.
 
-        logging.info(f"Sending order: {side} {quantity} of {symbol} with type={order_type}")
-        order_response = client.create_order(**params)
-        logging.info(f"Order executed: {order_response}")
-        return order_response
+    Returns:
+        Mapping with order response, or None if irrecoverable error.
+    """
+    # 1) Obtener precisión permitida (stepSize) para el símbolo
+    try:
+        info = client.get_symbol_info(symbol)
+        lot_size = next(
+            f["stepSize"] for f in info["filters"]
+            if f.get("filterType") == "LOT_SIZE"
+        )
+    except (KeyError, StopIteration):
+        logging.warning("No LOT_SIZE filter found for %s, using raw quantity", symbol)
+        quantity_str = str(quantity)
+    else:
+        # 2) Truncar quantity al paso permitido
+        q = Decimal(str(quantity))
+        step = Decimal(lot_size)
+        adj_q = (q // step) * step
+        precision = abs(step.as_tuple().exponent)
+        quantity_str = format(adj_q, f".{precision}f")
+
+    params = {
+        "symbol": symbol,
+        "side": side.upper(),
+        "type": order_type,
+        "quantity": quantity_str,
+    }
+
+    try:
+        # Mostrar en log tanto el valor bruto como el truncado
+        logging.info(
+            "Placing %s: raw_quantity=%s, sent_quantity=%s for %s",
+            side.upper(), quantity, quantity_str, symbol
+        )
+        resp = client.create_order(**params)
+        logging.info("Order status: %s", resp.get("status"))
+        return resp
+    except BinanceAPIException as e:
+        logging.warning("BinanceAPIException on place_order: %s", e)
+        raise  # para retry
     except Exception as e:
-        logging.error(f"Error placing order on Binance: {e}")
+        logging.error("Unexpected error placing order: %s", e)
         return None
 
-def list_open_orders(client: Client, symbol: str = "BTCUSDT") -> List[dict]:
+def list_open_orders(client: Client, symbol: str = "BTCUSDT") -> list[Mapping[str, any]]:
     """
-    Retrieves the list of open (pending) orders for a given trading pair from Binance.
-    
-    Parameters:
-        client (Client): Binance Client instance.
-        symbol (str): Trading pair symbol (default is "BTCUSDT").
-    
-    Returns:
-        List[dict]: A list of dictionaries representing the open orders. Returns an empty list if an error occurs.
+    Fetch open orders; on general error returns empty list.
     """
     try:
-        open_orders = client.get_open_orders(symbol=symbol)
-        logging.info(f"Open orders for {symbol}: {open_orders}")
-        return open_orders
+        orders = client.get_open_orders(symbol=symbol)
+        return orders
+    except BinanceAPIException as e:
+        logging.error("BinanceAPIException fetching open orders: %s", e)
+        return []
     except Exception as e:
-        logging.error(f"Error listing open orders: {e}")
+        logging.error("Unexpected error fetching open orders: %s", e)
         return []
 
 def cancel_order(client: Client, symbol: str, order_id: int) -> bool:
     """
-    Cancels a specific order on Binance for the given trading pair.
-    
-    Parameters:
-        client (Client): Binance Client instance.
-        symbol (str): Trading pair symbol.
-        order_id (int): The order ID to cancel.
-    
-    Returns:
-        bool: True if the order was successfully cancelled, False otherwise.
+    Cancel a specific order, catching only the BinanceAPIException.
     """
     try:
-        result = client.cancel_order(symbol=symbol, orderId=order_id)
-        logging.info(f"Order {order_id} successfully cancelled: {result}")
+        client.cancel_order(symbol=symbol, orderId=order_id)
+        logging.info("Cancelled order %s", order_id)
         return True
+    except BinanceAPIException as e:
+        logging.error("BinanceAPIException cancelling order %s: %s", order_id, e)
+        return False
     except Exception as e:
-        logging.error(f"Error cancelling order {order_id} on {symbol}: {e}")
+        logging.error("Unexpected error cancelling order %s: %s", order_id, e)
         return False
 
 def cancel_all_open_orders(client: Client, symbol: str = "BTCUSDT") -> None:
-    """
-    Cancels all open orders for the specified trading pair on Binance.
-    
-    This function retrieves all open orders and iteratively cancels each one.
-    
-    Parameters:
-        client (Client): Binance Client instance.
-        symbol (str): Trading pair symbol (default is "BTCUSDT").
-    """
-    orders = list_open_orders(client, symbol)
-    for order in orders:
-        order_id = order["orderId"]
-        cancel_order(client, symbol, order_id)
+    for o in list_open_orders(client, symbol):
+        cancel_order(client, symbol, o.get("orderId", 0))
 
-def fetch_klines_df(client: Client, symbol: str, interval: str, lookback: str) -> pd.DataFrame:
+# ─── Historical Data Fetching ───────────────────────────────────────────────
+def fetch_klines_df(
+    client: Client,
+    symbol: str,
+    interval: str,
+    lookback: str
+) -> pd.DataFrame:
     """
-    Fetches historical klines (candlestick data) from Binance (either testnet or mainnet) 
-    and returns it as a DataFrame.
-
-    :param client: binance.client.Client (already connected).
-    :param symbol: e.g., "BTCUSDT".
-    :param interval: e.g., Client.KLINE_INTERVAL_4HOUR.
-    :param lookback: e.g., "60 days ago UTC" or "30 hours ago UTC".
-    :return: pd.DataFrame with the following columns:
-        ['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', ...]
+    Fetch candlestick data into DataFrame; errors bubble up.
     """
-    logging.info(f"Fetching klines for {symbol}, interval={interval}, lookback={lookback}")
+    logging.info("Fetching klines %s @ %s (%s)", symbol, interval, lookback)
     klines = client.get_historical_klines(symbol, interval, lookback)
-
-    if not klines:
-        logging.warning("No klines returned.")
-        return pd.DataFrame()  # Return an empty DataFrame if no data is available
-
-    # Construct a DataFrame from the retrieved klines
     df = pd.DataFrame(klines, columns=[
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
+        'open_time','open','high','low','close','volume',
+        'close_time','quote_asset_volume','number_of_trades',
+        'taker_buy_base_volume','taker_buy_quote_volume','ignore'
     ])
-
-    # Convert relevant columns to numeric types for proper analysis
-    numeric_cols = ["open", "high", "low", "close", "volume",
-                    "quote_asset_volume", "taker_buy_base_volume", "taker_buy_quote_volume"]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")  # Convert to numbers, handling errors safely
-
-    # Convert timestamps from milliseconds to readable datetime format
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
-
-    # (Optional) You can rename columns for clarity if needed
-    # df.rename(columns={
-    #   "open_time": "timestamp",
-    #   "close": "closing_price_usd",
-    #   ...
-    # }, inplace=True)
-
+    num_cols = ['open','high','low','close','volume',
+                'quote_asset_volume','taker_buy_base_volume','taker_buy_quote_volume']
+    df[num_cols] = df[num_cols].apply(pd.to_numeric, errors='coerce')
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
+    df['close_time'] = pd.to_datetime(df['close_time'], unit='ms', utc=True)
     return df

@@ -1,163 +1,111 @@
 # tfg_bot_trading/executor/strategies/rsi/rsi_runner.py
 
+import logging
 import threading
 import time
-import logging
-import os
-import json
-import numpy as np
-import pandas as pd
-from typing import Dict, Any
+from typing import Any, Callable, Dict, Literal, Optional
 
-from binance.client import Client
-from executor.binance_api import connect_binance_production, fetch_klines_df
+from pydantic import BaseModel, Field, ValidationError, ConfigDict, model_validator
+from tenacity import retry, stop_after_attempt, wait_exponential
+from binance.exceptions import BinanceAPIException
 
-logger = logging.getLogger(__name__)
+from executor.strategies.rsi.rsi import run_strategy
 
-RSI_STATE_FILE = os.path.join(os.path.dirname(__file__), "rsi_state.json")
+logger = logging.getLogger("RSIRunner")
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
 
-def default_converter(o):
-    """Convert numpy data types to native Python types for JSON serialization."""
-    if isinstance(o, np.integer):
-        return int(o)
-    elif isinstance(o, np.floating):
-        return float(o)
-    elif isinstance(o, np.bool_):
-        return bool(o)
-    return str(o)
+# ─── Params Model ────────────────────────────────────────────────────────────
+class RSIParams(BaseModel):
+    model_config = ConfigDict(strict=True)
+    period: int = Field(14, ge=1)
+    overbought: float = Field(70.0, ge=0.0, le=100.0)
+    oversold: float = Field(30.0, ge=0.0, le=100.0)
+    timeframe: str = Field(...)
 
-def load_rsi_state() -> Dict[str, Any]:
+    @model_validator(mode='before')
+    def check_thresholds(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        ob = values.get("overbought")
+        os = values.get("oversold")
+        if os >= ob:
+            raise ValueError("'oversold' must be less than 'overbought'")
+        return values
+
+# ─── Base Runner ────────────────────────────────────────────────────────────
+class BaseStrategyRunner(threading.Thread):
     """
-    Loads RSI persistent state from a JSON file. If not found, returns last_signal='HOLD'.
+    Abstract runner for periodic strategy execution:
+      - validate params
+      - call run_strategy
+      - emit signal via callback
+      - fixed-interval loop with stop support
     """
-    if not os.path.exists(RSI_STATE_FILE):
-        return {"last_signal": "HOLD"}
-    try:
-        with open(RSI_STATE_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {"last_signal": "HOLD"}
-
-def save_rsi_state(state: Dict[str, Any]) -> None:
-    """
-    Saves RSI state (e.g. last_signal) to rsi_state.json.
-    """
-    try:
-        with open(RSI_STATE_FILE, "w") as f:
-            json.dump(state, f, default=default_converter)
-    except Exception as e:
-        logger.error(f"[RSIRunner] Error saving RSI state: {e}")
-
-def compute_rsi(df: pd.DataFrame, period: int) -> float:
-    """
-    Same RSI logic used in 'rsi.py', but repeated here for convenience.
-    """
-    if len(df) < period:
-        logger.warning("[RSIRunner] Not enough candles for RSI.")
-        return None
-
-    data = df.copy()
-    data["change"] = data["closing_price_usd"].diff()
-    data["gain"] = data["change"].apply(lambda x: x if x > 0 else 0)
-    data["loss"] = data["change"].apply(lambda x: -x if x < 0 else 0)
-
-    data["avg_gain"] = data["gain"].rolling(window=period, min_periods=period).mean()
-    data["avg_loss"] = data["loss"].rolling(window=period, min_periods=period).mean()
-
-    if pd.isna(data["avg_gain"].iloc[-1]) or pd.isna(data["avg_loss"].iloc[-1]):
-        logger.warning("[RSIRunner] RSI => NaN at the end => insufficient data.")
-        return None
-
-    if data["avg_loss"].iloc[-1] == 0:
-        return 100.0
-
-    rs = data["avg_gain"].iloc[-1] / data["avg_loss"].iloc[-1]
-    rsi_value = 100.0 - (100.0 / (1.0 + rs))
-    return rsi_value
-
-class RSIRunner(threading.Thread):
-    """
-    Thread that continuously runs RSI logic:
-      - Connects to Binance Production
-      - Fetches data every X seconds
-      - Calculates RSI
-      - Compares with thresholds (overbought, oversold)
-      - If there's a signal change, stores it in rsi_state.json
-    """
-
     def __init__(
         self,
         strategy_name: str,
-        strategy_params: Dict[str, Any],
+        raw_params: Dict[str, Any],
+        on_signal: Optional[Callable[[str, Dict[str, Any], Literal["BUY","SELL","HOLD"]], None]] = None,
         interval_seconds: float = 30.0,
         *args,
         **kwargs
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(daemon=True, *args, **kwargs)
         self.strategy_name = strategy_name
-        self.strategy_params = strategy_params
-        self.interval_seconds = interval_seconds
+        self.on_signal = on_signal or (lambda *_: None)
+        self.interval = interval_seconds
         self.stop_event = threading.Event()
-        self.daemon = True
+        self.logger = logging.getLogger(f"{self.__class__.__name__}.{strategy_name}")
+        try:
+            self.params = self._validate_params(raw_params)
+        except ValidationError as e:
+            self.logger.error("Invalid parameters: %s", e)
+            raise
+        except Exception as e:
+            self.logger.error("Parameter validation error: %s", e)
+            raise
 
     def run(self):
-        logger.info(f"[RSIRunner] Starting RSI thread for '{self.strategy_name}' with params={self.strategy_params}")
-        try:
-            self.client = connect_binance_production()
-        except Exception as e:
-            logger.error(f"[RSIRunner] Error connecting to Binance Production: {e}")
-            return
-
-        period = self.strategy_params.get("period", 14)
-        overbought = self.strategy_params.get("overbought", 70.0)
-        oversold = self.strategy_params.get("oversold", 30.0)
-        timeframe = self.strategy_params.get("timeframe", Client.KLINE_INTERVAL_4HOUR)
-
+        self.logger.info("'%s' started; interval=%ss", self.strategy_name, self.interval)
         while not self.stop_event.is_set():
+            start = time.perf_counter()
             try:
-                # Load previous state (e.g. last_signal)
-                state = load_rsi_state()
-                last_signal = state.get("last_signal", "HOLD")
+                params_dump = self.params.model_dump()
+                signal = run_strategy("", params_dump)
+                self.logger.info("Signal => %s", signal)
+                self.on_signal(self.strategy_name, params_dump, signal)
+            except BinanceAPIException as e:
+                self.logger.warning("Binance API error: %s", e)
+            except Exception:
+                self.logger.exception("Unexpected error in loop")
+            finally:
+                elapsed = time.perf_counter() - start
+                self.stop_event.wait(max(0, self.interval - elapsed))
+        self.logger.info("'%s' stopped.", self.strategy_name)
 
-                # Fetch klines
-                df_klines = fetch_klines_df(self.client, "BTCUSDT", timeframe, "60 days ago UTC")
-                if df_klines.empty:
-                    logger.warning("[RSIRunner] No klines => skipping iteration.")
-                else:
-                    # Rename columns
-                    df = df_klines.rename(columns={
-                        "open_time": "date",
-                        "high": "high_usd",
-                        "low": "low_usd",
-                        "close": "closing_price_usd"
-                    }).sort_values("date").reset_index(drop=True)
-
-                    # Compute RSI
-                    rsi_value = compute_rsi(df, period)
-                    if rsi_value is not None:
-                        # Evaluate thresholds
-                        if rsi_value < oversold:
-                            new_signal = "BUY"
-                        elif rsi_value > overbought:
-                            new_signal = "SELL"
-                        else:
-                            new_signal = "HOLD"
-
-                        # If there's a signal change from last_signal
-                        if new_signal in ["BUY", "SELL"] and new_signal != last_signal:
-                            logger.info(f"[RSIRunner] Signal changed from {last_signal} to {new_signal}")
-                            state["last_signal"] = new_signal
-                            save_rsi_state(state)
-                        else:
-                            logger.debug(f"[RSIRunner] No signal change => {last_signal}")
-
-                time.sleep(self.interval_seconds)
-
-            except Exception as e:
-                logger.error(f"[RSIRunner] Error in RSI loop => {e}")
-
-        logger.info(f"[RSIRunner] RSI thread '{self.strategy_name}' ended.")
-
-    def stop(self):
-        """Indicates that the thread should stop."""
+    def stop(self) -> None:
+        """Signal the thread to stop."""
         self.stop_event.set()
+
+    def _validate_params(self, raw: Dict[str, Any]) -> BaseModel:
+        raise NotImplementedError
+
+# ─── RSI Runner ─────────────────────────────────────────────────────────────
+class RSIRunner(BaseStrategyRunner):
+    def __init__(
+        self,
+        strategy_name: str,
+        raw_params: Dict[str, Any],
+        on_signal: Optional[Callable[[str, Dict[str, Any], Literal["BUY","SELL","HOLD"]], None]] = None,
+        interval_seconds: float = 30.0,
+        *args,
+        **kwargs
+    ):
+        super().__init__(strategy_name, raw_params, on_signal, interval_seconds, *args, **kwargs)
+
+    def _validate_params(self, raw: Dict[str, Any]) -> RSIParams:
+        return RSIParams(**raw)

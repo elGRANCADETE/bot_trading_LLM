@@ -1,124 +1,153 @@
 # tfg_bot_trading/executor/strategies/bollinger/bollinger_runner.py
 
+from __future__ import annotations
 import threading
-import time
 import logging
+from typing import Any, Callable, Dict, Literal, Optional
+
 import pandas as pd
 import numpy as np
-from typing import Dict, Any
-
+from tenacity import retry, stop_after_attempt, wait_exponential
+from pydantic import BaseModel, Field, ValidationError
+from binance.exceptions import BinanceAPIException
 from binance.client import Client
-from executor.binance_api import connect_binance_production, fetch_klines_df
 
-logger = logging.getLogger(__name__)
+from executor.binance_api import fetch_klines_df, connect_binance
 
+logger = logging.getLogger("BollingerRunner")
+
+
+# ─── Strategy Parameters Model ────────────────────────────────────────────────
+class BollingerParams(BaseModel):
+    """
+    Expected strategy_params keys:
+      - period (int ≥1): window size for Bollinger calculation
+      - stddev (float ≥0): number of standard deviations
+    """
+    period: int = Field(20, ge=1)
+    stddev: float = Field(2.0, ge=0.0)
+
+
+# ─── Data Fetch with Retry ─────────────────────────────────────────────────────
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def _fetch_data(client: Client, symbol: str) -> pd.DataFrame:
+    """
+    Download 4h klines with retries on transient failures.
+    Raises ValueError if no data or BinanceAPIException on API error.
+    """
+    try:
+        df = fetch_klines_df(client, symbol, Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+    except BinanceAPIException as e:
+        logger.error("Binance API error: %s", e)
+        raise
+    if df.empty:
+        raise ValueError("No kline data returned")
+    return df
+
+
+# ─── Bollinger Runner Thread ───────────────────────────────────────────────────
 class BollingerRunner(threading.Thread):
     """
-    Hilo que ejecuta continuamente la estrategia Bollinger Bands.
-    Cada 'interval_seconds', descarga ~100 días de velas 4h para BTCUSDT,
-    calcula la señal y la registra (o toma acción).
+    Thread that continuously runs the Bollinger Bands strategy.
+    On each interval it fetches data, computes signal and invokes a callback.
     """
 
     def __init__(
         self,
-        strategy_name: str,
+        client: Client,
         strategy_params: Dict[str, Any],
-        interval_seconds: float = 10.0,
+        symbol: str = "BTCUSDT",
+        interval_seconds: float = 60.0,
+        on_signal: Optional[Callable[[Literal["BUY", "SELL", "HOLD"]], None]] = None,
         *args,
         **kwargs
     ):
         """
-        strategy_name: e.g. "bollinger"
-        strategy_params: p.ej. {"period": 20, "stddev": 2.0}
-        interval_seconds: cada cuántos segundos se recalcula la señal
+        Args:
+            client: pre‑connected Binance Client (injected for testability)
+            strategy_params: dict with "period" and "stddev"
+            symbol: trading pair symbol
+            interval_seconds: wait time between iterations
+            on_signal: optional callback(signal) for BUY/SELL/HOLD
         """
         super().__init__(*args, **kwargs)
-        self.strategy_name = strategy_name
-        self.strategy_params = strategy_params
-        self.interval_seconds = interval_seconds
+        self.client = client
+        self.symbol = symbol
+        self.interval = interval_seconds
+        self.on_signal = on_signal
         self.stop_event = threading.Event()
-        self.daemon = True  # para que muera si muere el main thread
+        self.daemon = True
+
+        # Validate parameters
+        try:
+            self.params = BollingerParams(**strategy_params)
+        except ValidationError as e:
+            logger.error("Invalid Bollinger params: %s", e)
+            raise
+
+        logger.info("Initialized BollingerRunner for %s with params=%s",
+                    self.symbol, self.params.dict())
 
     def run(self):
-        logger.info(f"[BollingerRunner] Hilo iniciado para '{self.strategy_name}'.")
-        try:
-            # Conexión a Binance Production (puedes cachar excepción si falla)
-            self.client = connect_binance_production()
-        except Exception as e:
-            logger.error(f"[BollingerRunner] Error conectando a Binance: {e}")
-            return
-
+        logger.info("BollingerRunner thread started for %s.", self.symbol)
         while not self.stop_event.is_set():
             try:
-                # 1) Descarga de velas
-                df_klines = fetch_klines_df(
-                    self.client,
-                    "BTCUSDT",
-                    Client.KLINE_INTERVAL_4HOUR,
-                    "100 days ago UTC"
-                )
-                if df_klines.empty:
-                    logger.warning("[BollingerRunner] Sin velas => se omite iteración.")
-                else:
-                    # 2) Calcular la señal
-                    signal = self._compute_bollinger_signal(df_klines)
-                    logger.info(f"[BollingerRunner] Bollinger => {signal}")
-
-                    # Opcional: en caso de querer ejecutar órdenes
-                    # if signal == "BUY": ...
-                    # if signal == "SELL": ...
-                    # (depende de tu diseño)
-
-                # 3) Esperar interval_seconds
-                time.sleep(self.interval_seconds)
-
+                df = _fetch_data(self.client, self.symbol)
+                signal = self._compute_signal(df)
+                logger.info("Bollinger signal => %s", signal)
+                if self.on_signal:
+                    self.on_signal(signal)
             except Exception as e:
-                logger.error(f"[BollingerRunner] Error en bucle: {e}")
-                # decides si continuar o no. Aquí, continuamos.
+                logger.error("Error in Bollinger loop: %s", e)
+            # use wait so stop_event wakes immediately when set
+            self.stop_event.wait(self.interval)
 
-        logger.info(f"[BollingerRunner] Hilo de '{self.strategy_name}' finalizado.")
-
-    def _compute_bollinger_signal(self, df_klines: pd.DataFrame) -> str:
-        """
-        Lógica de Bollinger: esencialmente la misma que en 'bollinger.py'.
-        Podrías incluso importar y reutilizar run_strategy(...) si prefieres,
-        pero aquí se implementa inline.
-        """
-        period = self.strategy_params.get("period", 20)
-        stddev = self.strategy_params.get("stddev", 2.0)
-
-        df = df_klines.rename(columns={
-            "open_time": "date",
-            "high": "high_usd",
-            "low": "low_usd",
-            "close": "closing_price_usd"
-        }).sort_values("date").reset_index(drop=True)
-
-        if len(df) < period:
-            logger.warning("[BollingerRunner] Velas insuficientes => HOLD")
-            return "HOLD"
-
-        df["ma"] = df["closing_price_usd"].rolling(window=period, min_periods=period).mean()
-        df["std"] = df["closing_price_usd"].rolling(window=period, min_periods=period).std()
-
-        if pd.isna(df["ma"].iloc[-1]) or pd.isna(df["std"].iloc[-1]):
-            logger.warning("[BollingerRunner] NaN al final => HOLD")
-            return "HOLD"
-
-        df["upper"] = df["ma"] + (stddev * df["std"])
-        df["lower"] = df["ma"] - (stddev * df["std"])
-
-        last_close = float(df["closing_price_usd"].iloc[-1])
-        last_upper = float(df["upper"].iloc[-1])
-        last_lower = float(df["lower"].iloc[-1])
-
-        if last_close > last_upper:
-            return "SELL"
-        elif last_close < last_lower:
-            return "BUY"
-        else:
-            return "HOLD"
+        logger.info("BollingerRunner thread stopped for %s.", self.symbol)
 
     def stop(self):
-        """Indica al hilo que debe detenerse."""
+        """Signal the thread to stop after current iteration."""
         self.stop_event.set()
+
+    # ─── Core Signal Computation ───────────────────────────────────────────────
+    def _compute_signal(self, df_klines: pd.DataFrame) -> Literal["BUY", "SELL", "HOLD"]:
+        """
+        Compute BUY/SELL/HOLD based on Bollinger Bands:
+          - Close > upper → SELL
+          - Close < lower → BUY
+          - Otherwise → HOLD
+        """
+        p = self.params
+        df = (
+            df_klines
+            .rename(columns={
+                "open_time": "date",
+                "high": "high_usd",
+                "low": "low_usd",
+                "close": "closing_price_usd"
+            })
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+
+        if len(df) < p.period:
+            logger.warning("Insufficient candles (%d) for period %d → HOLD", len(df), p.period)
+            return "HOLD"
+
+        roll = df["closing_price_usd"].rolling(window=p.period, min_periods=p.period)
+        last_ma = roll.mean().iat[-1]
+        last_sd = roll.std().iat[-1]
+
+        if np.isnan(last_ma) or np.isnan(last_sd):
+            logger.warning("Rolling MA/STD is NaN → HOLD")
+            return "HOLD"
+
+        close = df["closing_price_usd"].iat[-1]
+        upper = last_ma + p.stddev * last_sd
+        lower = last_ma - p.stddev * last_sd
+
+        logger.debug("Close=%.2f, Upper=%.2f, Lower=%.2f", close, upper, lower)
+        if close > upper:
+            return "SELL"
+        if close < lower:
+            return "BUY"
+        return "HOLD"

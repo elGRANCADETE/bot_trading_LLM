@@ -1,308 +1,275 @@
-# tfgBotTrading/data_collector/analysis.py
+# tfg_bot_trading/data_collector/analysis.py
 
-from datetime import datetime, timezone
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+from typing import Any, Dict, List, Literal, Tuple
+
 import pandas as pd
 import talib
-from . import data_fetcher, indicators, output
+
+from . import data_fetcher, indicators
 from .utils import helpers
-import logging
 
-from typing import Dict, List, Tuple, Any
+logger = logging.getLogger(__name__)
 
-def compare_price_with_moving_averages(current_price: float, moving_averages: dict, df: pd.DataFrame) -> List[Tuple[str, float, float, str]]:
+# ───────────────────────── Utility ─────────────────────────
+def _safe_last(value: Any) -> float | None:
     """
-    Compares the current price with moving averages and returns a list of comparisons.
+    Return the last non-NaN value rounded to 2 decimals.
 
-    Parameters:
-        current_price (float): Current asset price.
-        moving_averages (dict): Dictionary of moving averages with their values.
-        df (pd.DataFrame): Market data DataFrame.
-
-    Returns:
-        List[Tuple[str, float, float, str]]: List of tuples with (name, percentage_difference, normalized_difference, direction).
+    • If *value* is a Series → use the last valid element.  
+    • If it is a scalar → check for NaN.
     """
-    moving_averages_series = pd.Series(moving_averages)
-    differences = ((current_price - moving_averages_series) / moving_averages_series) * 100
-    normalized_differences = ((differences + 30) / 60).clip(0, 1)
-    directions = differences.apply(lambda x: 'above' if x > 0 else 'below').tolist()
-    comparisons = list(zip(
-        moving_averages_series.index,
-        differences.round(2),
-        normalized_differences.round(2),
-        directions
-    ))
-    return comparisons
+    if isinstance(value, pd.Series):
+        value = value.dropna().iloc[-1] if not value.dropna().empty else None
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    return round(float(value), 2)
+
+# ───────────────────── Price vs. Moving-Averages ─────────────────────
+def compare_price_with_moving_averages(
+    price: float,
+    ma: Dict[str, float],
+    df: pd.DataFrame,          # kept for future extensions
+) -> List[Tuple[str, float, float, str]]:
+    """
+    Return a list of (MA-name, Δ%, normalised-Δ, direction).
+    """
+    s = pd.Series(ma)
+    pct       = ((price - s) / s) * 100
+    norm_0_1  = ((pct + 30) / 60).clip(0, 1)
+    direction = pct.apply(lambda x: "above" if x > 0 else "below")
+    return list(zip(s.index, pct.round(2), norm_0_1.round(2), direction.tolist()))
+
+# ───────────────────── Candle-pattern detection ─────────────────────
+_CANDLE_FUNCS = {
+    "CDLDOJI": "Doji",
+    "CDLDOJISTAR": "Doji Star",
+    "CDLHAMMER": "Hammer",
+    "CDLENGULFING": "Engulfing",
+    "CDLEVENINGSTAR": "Evening Star",
+    "CDLMORNINGSTAR": "Morning Star",
+    "CDLSHOOTINGSTAR": "Shooting Star",
+    "CDLHARAMI": "Harami",
+    "CDL3BLACKCROWS": "Three Black Crows",
+    "CDL3WHITESOLDIERS": "Three White Soldiers",
+    "CDLDRAGONFLYDOJI": "Dragonfly Doji",
+    "CDLGRAVESTONEDOJI": "Gravestone Doji",
+    "CDLSPINNINGTOP": "Spinning Top",
+    "CDLABANDONEDBABY": "Abandoned Baby",
+    "CDLMATCHINGLOW": "Matching Low",
+    "CDLKICKING": "Kicking",
+}
 
 def detect_candle_patterns(df: pd.DataFrame) -> List[Dict[str, Any]]:
     """
-    Detects candlestick patterns in the provided market data using TA-Lib functions.
-    
-    This function examines the latest complete candle in the DataFrame to identify various candlestick patterns.
-    It supports the following patterns:
-      - Doji (CDLDOJI) and Doji Star (CDLDOJISTAR)
-      - Hammer (CDLHAMMER)
-      - Engulfing (CDLENGULFING)
-      - Evening Star (CDLEVENINGSTAR)
-      - Morning Star (CDLMORNINGSTAR)
-      - Shooting Star (CDLSHOOTINGSTAR)
-      - Harami (CDLHARAMI)
-      - Three Black Crows (CDL3BLACKCROWS)
-      - Three White Soldiers (CDL3WHITESOLDIERS)
-      - Dragonfly Doji (CDLDRAGONFLYDOJI)
-      - Gravestone Doji (CDLGRAVESTONEDOJI)
-      - Spinning Top (CDLSPINNINGTOP)
-      - Abandoned Baby (CDLABANDONEDBABY)
-      - Doji Star (CDLDOJISTAR) [additional]
-      - Matching Low (CDLMATCHINGLOW) [additional]
-      - Kicking (CDLKICKING) [additional]
-
-    For each pattern, if TA-Lib returns a non-zero value for the latest complete candle, 
-    the pattern is considered detected and a descriptive message is appended.
-
-    Parameters:
-        df (pd.DataFrame): A DataFrame containing market data with columns 'open', 'high', 'low', 'close', and 'timestamp'.
-
-    Returns:
-        List[Dict[str, Any]]: A list of dictionaries, each representing a detected candlestick pattern.
-                               Each dictionary contains:
-                                 - "pattern_name": Name of the detected pattern.
-                                 - "date": Date of the candle where the pattern was detected.
-                                 - "description": A descriptive message indicating bullish or bearish sentiment.
+    Detect TA-Lib candlestick patterns on the latest **complete** candle.
     """
-    patterns = []
-    candlestick_patterns = {
-        'CDLDOJI': 'Doji',
-        'CDLDOJISTAR': 'Doji Star',
-        'CDLHAMMER': 'Hammer',
-        'CDLENGULFING': 'Engulfing',
-        'CDLEVENINGSTAR': 'Evening Star',
-        'CDLMORNINGSTAR': 'Morning Star',
-        'CDLSHOOTINGSTAR': 'Shooting Star',
-        'CDLHARAMI': 'Harami',
-        'CDL3BLACKCROWS': 'Three Black Crows',
-        'CDL3WHITESOLDIERS': 'Three White Soldiers',
-        'CDLDRAGONFLYDOJI': 'Dragonfly Doji',
-        'CDLGRAVESTONEDOJI': 'Gravestone Doji',
-        'CDLSPINNINGTOP': 'Spinning Top',
-        'CDLABANDONEDBABY': 'Abandoned Baby',
-        'CDLMATCHINGLOW': 'Matching Low',
-        'CDLKICKING': 'Kicking'
-    }
-    for pattern_func, pattern_name in candlestick_patterns.items():
+    patterns: List[Dict[str, Any]] = []
+    for func_name, pretty_name in _CANDLE_FUNCS.items():
         try:
-            pattern_result = getattr(talib, pattern_func)(df['open'], df['high'], df['low'], df['close'])
-            pattern_value = pattern_result.iloc[-1]
-            if pattern_value != 0:
-                pattern_type = "Bullish" if pattern_value > 0 else "Bearish"
-                description = f"{pattern_type} {pattern_name} pattern detected."
-                patterns.append({
-                    "pattern_name": pattern_name,
-                    "timestamp": df['timestamp'].iloc[-1].isoformat(),
-                    "description": description,
-                    "pattern_value": pattern_value,
-                    "details": f"El patrón {pattern_name} se detectó con un valor de {pattern_value}, lo que sugiere una señal {pattern_type.lower()} según TA-Lib."
-                })
+            res = getattr(talib, func_name)(
+                df["open"], df["high"], df["low"], df["close"]
+            ).iloc[-1]
         except AttributeError:
-            logging.warning(f"Pattern {pattern_func} not found in TA-Lib.")
+            logger.warning("TA-Lib missing %s", func_name)
             continue
+        if res == 0:
+            continue
+        sentiment = "Bullish" if res > 0 else "Bearish"
+        patterns.append(
+            {
+                "pattern_name": pretty_name,
+                "timestamp": df["timestamp"].iloc[-1].isoformat(),
+                "description": f"{sentiment} {pretty_name} detected.",
+                "pattern_value": res,
+            }
+        )
 
-    # Extend the list with custom-detected tweezer patterns
-    patterns.extend(detect_tweezer_patterns(df))
+    patterns.extend(_detect_tweezers(df))
     return patterns
 
-def detect_tweezer_patterns(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """
-    Detects Tweezer Tops and Tweezer Bottoms using a simple custom logic:
-    If the difference between the highs (or lows) of the last two complete candles
-    is less than 0.2% of their average, the pattern is considered present.
-
-    Parameters:
-        df (pd.DataFrame): A DataFrame containing market data.
-
-    Returns:
-        List[Dict[str, Any]]: A list of detected tweezer patterns with their names, date, and description.
-    """
-    custom_patterns = []
+def _detect_tweezers(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Very simple tweezer-top / tweezer-bottom check (last two candles)."""
     if len(df) < 2:
-        return custom_patterns
-    candle1 = df.iloc[-2]
-    candle2 = df.iloc[-1]
-    # Detect Tweezer Tops
-    avg_high = (candle1['high'] + candle2['high']) / 2
-    high_diff = abs(candle1['high'] - candle2['high'])
-    if high_diff / avg_high < 0.002:
-        custom_patterns.append({
-            "pattern_name": "Tweezer Tops",
-            "timestamp": candle2['timestamp'].isoformat(),
-            "description": "Tweezer Tops pattern detected.",
-            "details": {
-                "high_difference": round(high_diff, 4),
-                "average_high": round(avg_high, 4),
-                "threshold": 0.002,
-                "info": f"La diferencia entre los máximos es de {round(high_diff/avg_high*100,2)}%, inferior al umbral del 0.2%."
+        return []
+    a, b = df.iloc[-2], df.iloc[-1]
+    out: List[Dict[str, Any]] = []
+
+    hi_avg = (a.high + b.high) / 2
+    if abs(a.high - b.high) / hi_avg < 0.002:
+        out.append(
+            {
+                "pattern_name": "Tweezer Tops",
+                "timestamp": b.timestamp.isoformat(),
+                "description": "Tweezer Tops detected.",
             }
-        })
-    # Detect Tweezer Bottoms
-    avg_low = (candle1['low'] + candle2['low']) / 2
-    low_diff = abs(candle1['low'] - candle2['low'])
-    if low_diff / avg_low < 0.002:
-        custom_patterns.append({
-            "pattern_name": "Tweezer Bottoms",
-            "timestamp": candle2['timestamp'].isoformat(),
-            "description": "Tweezer Bottoms pattern detected.",
-            "details": {
-                "low_difference": round(low_diff, 4),
-                "average_low": round(avg_low, 4),
-                "threshold": 0.002,
-                "info": f"La diferencia entre los mínimos es de {round(low_diff/avg_low*100,2)}%, inferior al umbral del 0.2%."
+        )
+    lo_avg = (a.low + b.low) / 2
+    if abs(a.low - b.low) / lo_avg < 0.002:
+        out.append(
+            {
+                "pattern_name": "Tweezer Bottoms",
+                "timestamp": b.timestamp.isoformat(),
+                "description": "Tweezer Bottoms detected.",
             }
-        })
+        )
+    return out
 
-    return custom_patterns
-
-def compile_additional_indicators(df: pd.DataFrame, compiled_data: Dict[str, Any]) -> None:
+# ───────────────────── Rule-based signal engine ─────────────────────
+def generate_trading_signals(compiled: Dict[str, Any]) -> List[str]:
     """
-    Compiles additional indicators like CMF and MACD Histogram into the compiled_data dictionary.
-
-    Parameters:
-        df (pd.DataFrame): Market data DataFrame.
-        compiled_data (Dict[str, Any]): Compiled data dictionary.
+    Produce simple, human-readable trading signals from the compiled data-blob.
     """
-    # Currently not used as additional indicators are compiled elsewhere.
-    pass
+    ind       = compiled.get("indicators", {})
+    trend     = ind.get("trend", {})
+    momentum  = ind.get("momentum", {})
+    price     = compiled.get("real_time", {}).get("current_price_usd", 0.0)
 
-def generate_trading_signals(compiled_data: Dict[str, Any]) -> List[str]:
+    signals: set[str] = set()
+
+    # MACD × RSI
+    macd_sig = trend.get("macd_signal")
+    rsi_val  = momentum.get("rsi_points", {}).get("value", 0)
+    if macd_sig == "bullish" and rsi_val < 30:
+        signals.add("Bullish MACD + oversold RSI  →  BUY")
+    if macd_sig == "bearish" and rsi_val > 70:
+        signals.add("Bearish MACD + overbought RSI  →  SELL")
+
+    # Parabolic-SAR
+    sar = ind.get("parabolic_sar_usd", {}).get("value")
+    if sar is not None:
+        signals.add("Price above SAR → up-trend" if price > sar else "Price below SAR → down-trend")
+
+    # VWAP
+    vwap = ind.get("vwap_usd", {}).get("value")
+    if vwap is not None:
+        signals.add("Price above VWAP" if price > vwap else "Price below VWAP")
+
+    # CMF
+    cmf = ind.get("cmf", {}).get("cmf_value", 0.0)
+    if cmf > 0:
+        signals.add("Buying pressure (CMF > 0)")
+    elif cmf < 0:
+        signals.add("Selling pressure (CMF < 0)")
+
+    return sorted(signals)
+
+# ───────────────────── Robust Ichimoku helper ─────────────────────
+def calc_ichimoku_robust(
+    df: pd.DataFrame,
+    tenkan_period: int = 9,
+    kijun_period: int = 26,
+    span_b_period: int = 52,
+    disp: int = 26,
+) -> Dict[str, str]:
     """
-    Generates trading signals based on various technical indicators extracted from the compiled data.
-    
-    This function analyzes key indicator values such as MACD, RSI, Parabolic SAR, Ichimoku Cloud, VWAP,
-    Chaikin Money Flow, and MACD Histogram. It evaluates a series of conditions and, if a condition is met,
-    adds a corresponding signal message to the output list.
-
-    Parameters:
-        compiled_data (Dict[str, Any]): The dictionary containing all compiled market data and technical indicators.
-    
-    Returns:
-        List[str]: A list of trading signal messages.
-        
-    Steps:
-      1) Extract relevant indicator values from the compiled data dictionary.
-      2) Define a set of conditions with their corresponding descriptive messages.
-      3) Iterate over the conditions and, if a condition is True, add its message to the set.
-      4) Return the list of unique signal messages.
+    Very lightweight BUY / SELL / HOLD decision based on:
+    • Tenkan / Kijun cross  
+    • Price vs. cloud
     """
-    signals = set()
-    # Extract technical indicator groups from the compiled data
-    indicators_data = compiled_data.get('indicators', {})
-    trend = indicators_data.get('trend', {})
-    momentum = indicators_data.get('momentum', {})
-    volatility = indicators_data.get('volatility', {})
-    volume = indicators_data.get('volume', {})
-    additional_indicators = indicators_data.get('additional_indicators', {})
+    need = span_b_period + disp
+    if len(df) < need:
+        return {"signal": "HOLD", "reason": f"Need ≥{need} candles"}
 
-    # Extract individual indicator values
-    macd_signal = trend.get('macd_signal', "neutral")
-    rsi = momentum.get('rsi_points', {}).get('value', 0)
-    sar = additional_indicators.get('parabolic_sar_usd', {}).get('value')
-    ichimoku = additional_indicators.get('ichimoku_cloud_usd', {})
-    vwap = additional_indicators.get('vwap_usd', {}).get('value')
-    cmf = indicators_data.get('cmf', {}).get('cmf_value', 0.0)
-    macd_hist = indicators_data.get('macd_histogram', {}).get('macd_histogram_value', 0.0)
-    current_price = compiled_data.get('real_time_data', {}).get('current_price_usd', 0)
+    h, l, c = df["high"], df["low"], df["close"]
+    tenkan  = (h.rolling(tenkan_period).max() + l.rolling(tenkan_period).min()) / 2
+    kijun   = (h.rolling(kijun_period).max() + l.rolling(kijun_period).min()) / 2
+    span_a  = ((tenkan + kijun) / 2).shift(disp)
+    span_b  = ((h.rolling(span_b_period).max() + l.rolling(span_b_period).min()) / 2).shift(disp)
 
-    logging.debug(f"Generating trading signals with RSI: {rsi}, MACD Signal: {macd_signal}")
+    bull_cross = tenkan.iloc[-2] < kijun.iloc[-2] and tenkan.iloc[-1] > kijun.iloc[-1]
+    bear_cross = tenkan.iloc[-2] > kijun.iloc[-2] and tenkan.iloc[-1] < kijun.iloc[-1]
+    cross_str  = "bullish" if bull_cross else "bearish" if bear_cross else "none"
 
-    # Define conditions and their corresponding signal messages
-    conditions = [
-        (macd_signal == "bullish" and rsi < 30, "Buy Signal: Bullish MACD crossover and RSI in oversold condition."),
-        (macd_signal == "bearish" and rsi > 70, "Sell Signal: Bearish MACD crossover and RSI in overbought condition."),
-        (trend.get('macd_value', 0) > trend.get('macd_signal_value', 0) and macd_signal == "bullish", "Bullish MACD crossover."),
-        (trend.get('macd_value', 0) < trend.get('macd_signal_value', 0) and macd_signal == "bearish", "Bearish MACD crossover."),
-        (sar is not None and current_price > sar, "Parabolic SAR indicates an uptrend."),
-        (sar is not None and current_price <= sar, "Parabolic SAR indicates a downtrend."),
-        (ichimoku and current_price > ichimoku.get('leading_span_a', 0) and current_price > ichimoku.get('leading_span_b', 0), "Ichimoku Cloud indicates bullish support."),
-        (ichimoku and current_price < ichimoku.get('leading_span_a', 0) and current_price < ichimoku.get('leading_span_b', 0), "Ichimoku Cloud indicates bearish resistance."),
-        (vwap is not None and current_price > vwap, "Price above VWAP: Bullish trend."),
-        (vwap is not None and current_price <= vwap, "Price below VWAP: Bearish trend."),
-        (cmf > 0, "Chaikin Money Flow indicates buying pressure."),
-        (cmf < 0, "Chaikin Money Flow indicates selling pressure."),
-        (macd_hist > 0, "MACD Histogram is positive, indicating bullish momentum."),
-        (macd_hist < 0, "MACD Histogram is negative, indicating bearish momentum.")
-    ]
-    
-    # Evaluate each condition and add its message if the condition is met
-    for condition, message in conditions:
-        if condition:
-            signals.add(message)
-    
-    logging.debug(f"Generated signals: {signals}")
-    return list(signals)
+    price      = c.iloc[-1]
+    top_cloud  = max(span_a.iloc[-1], span_b.iloc[-1])
+    bot_cloud  = min(span_a.iloc[-1], span_b.iloc[-1])
+    pos        = "above" if price > top_cloud else "below" if price < bot_cloud else "in"
 
-def calc_ichimoku_robust(df: pd.DataFrame,
-                         tenkan_period: int = 9,
-                         kijun_period: int = 26,
-                         senkou_span_b_period: int = 52,
-                         displacement: int = 26) -> dict:
+    signal = (
+        "BUY"  if bull_cross and pos == "above" else
+        "SELL" if bear_cross and pos == "below" else
+        "HOLD"
+    )
+    return {"signal": signal, "price_vs_cloud": pos, "tenkan_kijun_cross": cross_str}
+
+# ───────────────────── Multi-Time-Frame analysis ─────────────────────
+async def _multi_tf_async(symbol: str = "BTC/USDT") -> Dict[str, Any]:
+    """Download 1-day and 1-week data in parallel using **ccxt.pro**."""
+    async def _one(tf: Literal["1d", "1w"]) -> tuple[str, pd.DataFrame]:
+        days = 401 if tf == "1d" else 400
+        df   = await data_fetcher.get_ohlcv_data_async(symbol=symbol, timeframe=tf, days=days)
+        return tf, df
+
+    results = await asyncio.gather(*[_one("1d"), _one("1w")])
+
+    out: Dict[str, Any] = {}
+    for tf, df in results:
+        if df.empty or len(df) < 20:
+            logger.warning("No data or too few rows for %s", tf)
+            continue
+        label    = "daily" if tf == "1d" else "weekly"
+        macd     = indicators.get_macd(df)
+        raw_rsi, _ = indicators.get_rsi(df)
+        out[label] = {
+            "last_close_usd": _safe_last(df["close"].iloc[-1]),
+            "rsi":            _safe_last(raw_rsi),
+            "macd":           _safe_last(macd["macd_value"]),
+            "adx":            _safe_last(indicators.get_adx(df)),
+        }
+    return out
+
+def _multi_tf_sync(exchange) -> Dict[str, Any]:
+    """Classic synchronous fallback - one timeframe at a time."""
+    result: Dict[str, Any] = {}
+    for tf, label in [("1d", "daily"), ("1w", "weekly")]:
+        try:
+            df = data_fetcher.get_ohlcv_data(
+                exchange,
+                timeframe=tf,
+                days=401 if tf == "1d" else 400,
+            )
+            if df.empty or len(df) < 20:
+                logger.warning("No data or too few rows for %s", tf)
+                continue
+            macd     = indicators.get_macd(df)
+            raw_rsi, _ = indicators.get_rsi(df)
+            result[label] = {
+                "last_close_usd": _safe_last(df["close"].iloc[-1]),
+                "rsi":            _safe_last(raw_rsi),
+                "macd":           _safe_last(macd["macd_value"]),
+                "adx":            _safe_last(indicators.get_adx(df)),
+            }
+        except Exception as exc:
+            logger.error("Sync multi-TF failed for %s: %s", tf, exc, exc_info=True)
+    return result or {"note": "Multi-time-frame data unavailable"}
+
+def get_multi_timeframe_analysis(exchange=None) -> Dict[str, Any]:
     """
-    Calculates a more robust Ichimoku indicator with displacement.
-    Requires at least (senkou_span_b_period + displacement) candles to properly shift the spans.
-
-    Returns a dict like:
-    {
-      "signal": "BUY"/"SELL"/"HOLD",
-      "price_vs_cloud": "above"/"below"/"in",
-      "tenkan_kijun_cross": "bullish"/"bearish"/"none",
-      ...
-    }
-
-    Steps:
-      1) Tenkan-sen = (highest high of last 'tenkan_period' + lowest low) / 2
-      2) Kijun-sen  = (highest high of last 'kijun_period' + lowest low) / 2
-      3) Span A = (Tenkan + Kijun)/2, shifted forward 'displacement' periods
-      4) Span B = (highest high of last 'senkou_span_b_period' + lowest low)/2, also shifted forward
-      5) Checks the final Tenkan/Kijun cross, compares price to the cloud, and produces a simplified signal.
+    Wrapper that decides whether to run the async or the sync variant,
+    depending on whether an event-loop is already running.
     """
-    needed_min = senkou_span_b_period + displacement
-    if len(df) < needed_min:
-        return {"signal": "HOLD", "reason": f"Not enough candles (need >= {needed_min})."}
-    required_cols = {"high", "low", "close"}
-    if not required_cols.issubset(df.columns):
-        return {"signal": "HOLD", "reason": "Missing some of (high, low, close)"}
-    df_calc = df.copy()
-    df_calc["tenkan_high"] = df_calc["high"].rolling(tenkan_period).max()
-    df_calc["tenkan_low"]  = df_calc["low"].rolling(tenkan_period).min()
-    df_calc["tenkan_sen"]  = (df_calc["tenkan_high"] + df_calc["tenkan_low"]) / 2.0
-    df_calc["kijun_high"]  = df_calc["high"].rolling(kijun_period).max()
-    df_calc["kijun_low"]   = df_calc["low"].rolling(kijun_period).min()
-    df_calc["kijun_sen"]   = (df_calc["kijun_high"] + df_calc["kijun_low"]) / 2.0
-    df_calc["span_a"] = (df_calc["tenkan_sen"] + df_calc["kijun_sen"]) / 2
-    df_calc["span_a"] = df_calc["span_a"].shift(displacement)
-    df_calc["span_b_high"] = df_calc["high"].rolling(senkou_span_b_period).max()
-    df_calc["span_b_low"]  = df_calc["low"].rolling(senkou_span_b_period).min()
-    df_calc["span_b"]      = ((df_calc["span_b_high"] + df_calc["span_b_low"]) / 2).shift(displacement)
-    last_idx = df_calc.index[-1]
-    prev_idx = last_idx - 1
-    if last_idx < 1:
-        return {"signal": "HOLD", "reason": "Insufficient rows after shift."}
-    tenkan_prev = df_calc.at[prev_idx, "tenkan_sen"]
-    kijun_prev  = df_calc.at[prev_idx, "kijun_sen"]
-    tenkan_last = df_calc.at[last_idx, "tenkan_sen"]
-    kijun_last  = df_calc.at[last_idx, "kijun_sen"]
-    price_last  = df_calc.at[last_idx, "close"]
-    span_a_last = df_calc.at[last_idx, "span_a"]
-    span_b_last = df_calc.at[last_idx, "span_b"]
-    if pd.isna(tenkan_prev) or pd.isna(kijun_prev) or pd.isna(tenkan_last) or pd.isna(kijun_last) \
-       or pd.isna(span_a_last) or pd.isna(span_b_last):
-        return {"signal": "HOLD", "reason": "NaN in Ichimoku lines."}
-    bullish_cross = (tenkan_prev < kijun_prev) and (tenkan_last > kijun_last)
-    bearish_cross = (tenkan_prev > kijun_prev) and (tenkan_last < kijun_last)
-    cross_str = "bullish" if bullish_cross else "bearish" if bearish_cross else "none"
-    top_cloud = max(span_a_last, span_b_last)
-    bot_cloud = min(span_a_last, span_b_last)
-    price_vs_cloud = "above" if price_last > top_cloud else "below" if price_last < bot_cloud else "in"
-    signal = "BUY" if bullish_cross and price_vs_cloud == "above" else "SELL" if bearish_cross and price_vs_cloud == "below" else "HOLD"
-    return {
-        "signal": signal,
-        "price_vs_cloud": price_vs_cloud,
-        "tenkan_kijun_cross": cross_str
-    }
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    # a) Already inside an event loop → synchronous fallback (safe & simple)
+    if loop and loop.is_running():
+        return _multi_tf_sync(exchange)
+
+    # b) No running loop → we may run the async version
+    try:
+        if sys.platform == "win32" and loop is None:
+            # Some Windows interpreters need the selector policy for ccxt.pro websockets
+            from asyncio import WindowsSelectorEventLoopPolicy
+            asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+
+        return asyncio.run(_multi_tf_async())
+    except Exception as exc:
+        logger.error("Async multi-TF failed - falling back to sync (%s)", exc)
+        return _multi_tf_sync(exchange)

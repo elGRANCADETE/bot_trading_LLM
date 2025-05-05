@@ -2,10 +2,10 @@ SYSTEM MESSAGE:
 You are an expert trading advisor.
 
 You are managing a crypto wallet with these balances:
-- BTC balance: 1.05 BTC
-- USDT balance: 5643.658 USDT
+- BTC balance: 1.04706 BTC
+- USDT balance: 3850.0282343 USDT
 
-The current price of BTC is approximately 85817.99 USDT.
+The current price of BTC is approximately 95600.0 USDT.
 
 IMPORTANT: Binance charges a 0.1% fee on each BUY or SELL trade. Factor this fee into your calculations so that the net position is valid.
 
@@ -26,282 +26,274 @@ Return ONLY a JSON array of trading decisions. No explanations. No text outside 
 
 
 USER PROMPT:
-
 Context about Available Strategies:
-
 The available trading strategies are:
 1. ATR Stop:
-   - Parameters: period (14), multiplier (2.0), consecutive_candles (2), atr_min_threshold (0.0), lock_candles (2), gap_threshold (0.03), use_leading_line (False).
+   - Parameters: period (14), multiplier (2.0), consecutive_candles (2),
+     atr_min_threshold (0.0), lock_candles (2), gap_threshold (0.03),
+     use_leading_line (False).
 2. Bollinger Bands:
    - Parameters: period (20), stddev (2).
 3. Ichimoku:
-   - Parameters: tenkan_period (9), kijun_period (26), senkou_span_b_period (52), displacement (26).
+   - Parameters: tenkan_period (9), kijun_period (26),
+     senkou_span_b_period (52), displacement (26).
 4. MA Crossover:
    - Parameters: fast (10), slow (50).
 5. MACD:
    - Parameters: fast (12), slow (26), signal (9).
 6. Range Trading:
-   - Parameters: period (20), buy_threshold (10), sell_threshold (10), max_range_pct (10).
+   - Parameters: period (20), buy_threshold (10), sell_threshold (10),
+     max_range_pct (10).
 7. RSI:
    - Parameters: period (14), overbought (70), oversold (30).
 8. Stochastic:
    - Parameters: k_period (14), d_period (3), overbought (80), oversold (20).
 
-
-
 Market data (JSON):
 {
     "metadata": {
         "source": "Binance",
-        "frequency": "4 hours",
-        "generation_date": "2025-03-19T22:13:04.109994+00:00"
+        "frequency": "4h",
+        "generated_at": "2025-05-04T19:44:53.995244+00:00"
     },
     "wallet": {
         "balance": {
-            "BTC": 0.3,
-            "USDT": 67949.0089
+            "BTC": 1.0471,
+            "USDT": 3850.0282
         }
     },
-    "real_time_data": {
-        "timestamp": "2025-03-19T16:00:00+00:00",
-        "opening_price_usd": 84733.05,
-        "current_price_usd": 85817.99,
-        "high_usd": 85950.0,
-        "low_usd": 83578.32,
-        "volume_btc": 9865.44
+    "real_time": {
+        "timestamp": "2025-05-04T12:00:00+00:00",
+        "opening_price_usd": 95423.19,
+        "current_price_usd": 95600.0,
+        "high_usd": 95690.48,
+        "low_usd": 95209.07,
+        "volume_btc": 1981.95
     },
-    "historical_data": {
+    "historical": {
         "historical_prices": [
             {
                 "days_ago": 1,
-                "date": "2025-03-18T12:00:00+00:00",
-                "opening_price_usd": 82581.09,
-                "closing_price_usd": 81610.21,
-                "high_usd": 82821.6,
-                "low_usd": 81134.66,
-                "volume_btc": 5242.88
+                "date": "2025-05-03T08:00:00+00:00",
+                "opening_price_usd": 96322.68,
+                "closing_price_usd": 95942.02,
+                "high_usd": 96421.91,
+                "low_usd": 95852.29,
+                "volume_btc": 2622.44
             },
             {
                 "days_ago": 3,
-                "date": "2025-03-16T12:00:00+00:00",
-                "opening_price_usd": 82410.01,
-                "closing_price_usd": 83320.83,
-                "high_usd": 83508.95,
-                "low_usd": 82400.0,
-                "volume_btc": 3782.45
+                "date": "2025-05-01T08:00:00+00:00",
+                "opening_price_usd": 95025.84,
+                "closing_price_usd": 96180.01,
+                "high_usd": 96396.31,
+                "low_usd": 94913.04,
+                "volume_btc": 4237.09
             },
             {
                 "days_ago": 5,
-                "date": "2025-03-14T12:00:00+00:00",
-                "opening_price_usd": 83253.15,
-                "closing_price_usd": 84724.58,
-                "high_usd": 85309.71,
-                "low_usd": 82640.59,
-                "volume_btc": 11416.87
+                "date": "2025-04-29T08:00:00+00:00",
+                "opening_price_usd": 94917.61,
+                "closing_price_usd": 95129.74,
+                "high_usd": 95285.71,
+                "low_usd": 94743.01,
+                "volume_btc": 2370.91
             },
             {
                 "days_ago": 7,
-                "date": "2025-03-12T12:00:00+00:00",
-                "opening_price_usd": 83004.45,
-                "closing_price_usd": 81738.97,
-                "high_usd": 84539.85,
-                "low_usd": 80607.65,
-                "volume_btc": 11813.61
+                "date": "2025-04-27T08:00:00+00:00",
+                "opening_price_usd": 94065.99,
+                "closing_price_usd": 93920.01,
+                "high_usd": 94331.85,
+                "low_usd": 93883.81,
+                "volume_btc": 1343.03
             },
             {
                 "days_ago": 10,
-                "date": "2025-03-09T12:00:00+00:00",
-                "opening_price_usd": 85024.0,
-                "closing_price_usd": 83080.41,
-                "high_usd": 85058.34,
-                "low_usd": 82711.5,
-                "volume_btc": 6724.2
+                "date": "2025-04-24T08:00:00+00:00",
+                "opening_price_usd": 92203.54,
+                "closing_price_usd": 92619.94,
+                "high_usd": 92657.69,
+                "low_usd": 91660.01,
+                "volume_btc": 3940.59
             },
             {
                 "days_ago": 15,
-                "date": "2025-03-04T12:00:00+00:00",
-                "opening_price_usd": 83937.93,
-                "closing_price_usd": 82985.06,
-                "high_usd": 84977.65,
-                "low_usd": 81500.0,
-                "volume_btc": 14268.2
+                "date": "2025-04-19T08:00:00+00:00",
+                "opening_price_usd": 85217.38,
+                "closing_price_usd": 85217.4,
+                "high_usd": 85436.72,
+                "low_usd": 85115.45,
+                "volume_btc": 1378.38
             },
             {
                 "days_ago": 20,
-                "date": "2025-02-27T12:00:00+00:00",
-                "opening_price_usd": 86698.6,
-                "closing_price_usd": 85500.84,
-                "high_usd": 86795.9,
-                "low_usd": 84640.75,
-                "volume_btc": 12382.79
+                "date": "2025-04-14T08:00:00+00:00",
+                "opening_price_usd": 84580.77,
+                "closing_price_usd": 84927.55,
+                "high_usd": 84965.34,
+                "low_usd": 84250.0,
+                "volume_btc": 2672.54
             },
             {
                 "days_ago": 25,
-                "date": "2025-02-22T12:00:00+00:00",
-                "opening_price_usd": 96580.0,
-                "closing_price_usd": 96592.0,
-                "high_usd": 96980.0,
-                "low_usd": 96485.37,
-                "volume_btc": 2290.85
+                "date": "2025-04-09T08:00:00+00:00",
+                "opening_price_usd": 77694.12,
+                "closing_price_usd": 76230.01,
+                "high_usd": 77880.0,
+                "low_usd": 75756.86,
+                "volume_btc": 7898.75
             },
             {
                 "days_ago": 30,
-                "date": "2025-02-17T12:00:00+00:00",
-                "opening_price_usd": 96063.17,
-                "closing_price_usd": 95659.46,
-                "high_usd": 97046.59,
-                "low_usd": 95564.0,
-                "volume_btc": 4434.6
+                "date": "2025-04-04T08:00:00+00:00",
+                "opening_price_usd": 83992.85,
+                "closing_price_usd": 82680.45,
+                "high_usd": 84720.0,
+                "low_usd": 81659.0,
+                "volume_btc": 9682.54
             }
         ],
         "closing_price_percentage_changes": [
             {
                 "from_days_ago": 1,
                 "to_days_ago": 3,
-                "percentage_change": 2.1
+                "percentage_change": 0.25
             },
             {
                 "from_days_ago": 3,
                 "to_days_ago": 5,
-                "percentage_change": 1.68
+                "percentage_change": -1.09
             },
             {
                 "from_days_ago": 5,
                 "to_days_ago": 7,
-                "percentage_change": -3.52
+                "percentage_change": -1.27
             },
             {
                 "from_days_ago": 7,
                 "to_days_ago": 10,
-                "percentage_change": 1.64
+                "percentage_change": -1.38
             },
             {
                 "from_days_ago": 10,
                 "to_days_ago": 15,
-                "percentage_change": -0.11
+                "percentage_change": -7.99
             },
             {
                 "from_days_ago": 15,
                 "to_days_ago": 20,
-                "percentage_change": 3.03
+                "percentage_change": -0.34
             },
             {
                 "from_days_ago": 20,
                 "to_days_ago": 25,
-                "percentage_change": 12.97
+                "percentage_change": -10.24
             },
             {
                 "from_days_ago": 25,
                 "to_days_ago": 30,
-                "percentage_change": -0.97
+                "percentage_change": 8.46
             }
         ],
         "cumulative_change_summary": {
-            "cumulative_change_5_days_percent": 1.29,
-            "cumulative_change_10_days_percent": 3.3,
-            "cumulative_change_20_days_percent": 0.37,
-            "cumulative_change_30_days_percent": -10.29,
-            "unit": "%"
+            "unit": "%",
+            "cumulative_5d_%": 0.49,
+            "cumulative_10d_%": 3.22,
+            "cumulative_20d_%": 12.57,
+            "cumulative_30d_%": 15.63
         }
     },
     "indicators": {
         "trend": {
             "moving_averages": {
-                "sma_5d": 83570.4433,
-                "sma_50d": 92142.9907,
-                "sma_200d": 84296.4701,
-                "ema_5d": 83339.1433,
-                "ema_50d": 89949.0178,
-                "ema_200d": 85492.6377
+                "sma_5d": 95773.189,
+                "ema_5d": 95717.1494,
+                "sma_50d": 86478.0258,
+                "ema_50d": 89055.262,
+                "sma_200d": 90190.5892,
+                "ema_200d": 87092.1638
             },
-            "global_deviation_score": 0.03,
-            "normalized_macd_delta": 0.7224,
-            "normalized_adx": 0.13,
-            "macd_value": 211.03,
-            "macd_signal_value": -11.38,
-            "macd_signal": "bullish",
-            "adx_value": 13.18,
+            "global_deviation_score": 0.06,
+            "normalized_macd_delta": 0.29,
+            "normalized_adx": 0.17,
+            "macd_value": 135.77,
+            "macd_signal_value": 345.82,
+            "macd_signal": "bearish",
+            "adx_value": 16.74,
             "adx_trend": "weak"
         },
         "momentum": {
             "rsi_points": {
-                "value": 63.21,
-                "normalized_value": 0.63,
-                "description": "Relative Strength Index (RSI)"
+                "value": 46.68,
+                "normalized_value": 0.47
             },
             "stochastic_oscillator": {
-                "k_percent": 86.99,
-                "k_percent_normalized": 0.87,
-                "d_percent": 74.95,
-                "d_percent_normalized": 0.75,
-                "description": "Stochastic Oscillator"
+                "k_percent": 9.17,
+                "k_percent_normalized": 0.09,
+                "d_percent": 8.28,
+                "d_percent_normalized": 0.08
             },
             "momentum_warnings": []
         },
         "volatility": {
             "atr_usd": {
-                "value": 1227.7,
-                "normalized_value": 0.0144,
-                "description": "Average True Range (ATR)"
+                "value": 769.65,
+                "description": "Average True Range (absolute USD)"
             },
             "bollinger_bands": {
-                "upper_band_usd": 85076.5,
-                "lower_band_usd": 81682.06,
-                "current_price_relation": "above",
-                "band_trend": "expanding",
-                "normalized_band_width": 0.0397
+                "upper_band": 97411.36,
+                "lower_band": 95318.14,
+                "bandwidth_trend": "contracting",
+                "current_price_relation": "within"
             },
             "volatility_index": {
-                "value": 1019.48,
-                "description": "Volatility Index based on standard deviation"
+                "value": 588.04,
+                "description": "Rolling standard deviation of close prices"
             }
         },
         "volume": {
-            "current_obv": 114576.61,
+            "current_obv": 169116.66,
             "obv_percentage_changes": {
-                "obv_change_7_days_percent": 32.93,
-                "obv_change_14_days_percent": 36.65,
-                "obv_change_30_days_percent": 21.42
+                "obv_change_7_days_percent": -0.32,
+                "obv_change_14_days_percent": -1.89,
+                "obv_change_30_days_percent": 3.19
             },
             "average_volumes_btc": {
-                "average_volume_7_days": 4054.98,
-                "average_volume_14_days": 3731.41,
-                "average_volume_30_days": 3010.41,
-                "average_volume_90_days": 4962.21,
-                "average_volume_180_days": 5785.7
+                "average_volume_7_days": 1566.51,
+                "average_volume_14_days": 1963.88,
+                "average_volume_30_days": 2578.76,
+                "average_volume_90_days": 3236.36,
+                "average_volume_180_days": 4075.95
             },
             "volume_variations_percent": {
-                "volume_variation_7_days_percent": 143.29,
-                "volume_variation_14_days_percent": 164.39,
-                "volume_variation_30_days_percent": 227.71,
-                "volume_variation_90_days_percent": 98.81,
-                "volume_variation_180_days_percent": 70.51
+                "volume_variation_7_days_percent": 26.52,
+                "volume_variation_14_days_percent": 0.92,
+                "volume_variation_30_days_percent": -23.14,
+                "volume_variation_90_days_percent": -38.76,
+                "volume_variation_180_days_percent": -51.37
             },
-            "volume_oscillator": 34.7
+            "volume_oscillator": -39.25
         },
         "parabolic_sar_usd": {
-            "value": 81209.73,
-            "unit": "USD",
-            "description": "Parabolic SAR"
+            "value": 97703.6,
+            "unit": "USD"
         },
         "ichimoku_cloud_usd": {
-            "conversion_line": 83542.33,
-            "base_line": 83542.33,
-            "leading_span_a": 82624.06,
-            "leading_span_b": 83944.51
+            "conversion_line": 95901.04,
+            "base_line": 95402.84,
+            "leading_span_a": 94408.52,
+            "leading_span_b": 91073.91
         },
         "vwap_usd": {
-            "value": 83976.81,
-            "unit": "USD",
-            "description": "Volume Weighted Average Price (VWAP)"
+            "value": 95655.96,
+            "unit": "USD"
         },
         "cmf": {
-            "cmf_value": 0.29,
-            "description": "Chaikin Money Flow (CMF)"
+            "cmf_value": -0.08
         },
         "macd_histogram": {
-            "macd_histogram_value": 222.4,
-            "description": "MACD Histogram"
+            "macd_histogram_value": -210.04
         },
         "ichimoku_robust": {
             "signal": "HOLD",
@@ -313,249 +305,159 @@ Market data (JSON):
         "pivot_points_usd": [
             {
                 "level": "pivot",
-                "value": 84377.09
+                "value": 95544.51
             },
             {
                 "level": "resistance1",
-                "value": 85243.96
+                "value": 95802.23
             },
             {
                 "level": "support1",
-                "value": 83866.17
+                "value": 95165.47
             },
             {
                 "level": "resistance2",
-                "value": 85754.88
+                "value": 96181.27
             },
             {
                 "level": "support2",
-                "value": 82999.3
+                "value": 94907.75
             }
         ],
         "fibonacci_levels_usd": [
             {
-                "level": "0_percent",
-                "value": 85950.0
+                "level": "level_0%",
+                "value": 97895.68
             },
             {
-                "level": "23.6_percent",
-                "value": 84813.58
+                "level": "level_23.6%",
+                "value": 97261.64
             },
             {
-                "level": "38.2_percent",
-                "value": 84110.54
+                "level": "level_38.2%",
+                "value": 96869.39
             },
             {
-                "level": "50_percent",
-                "value": 83542.33
+                "level": "level_50%",
+                "value": 96552.38
             },
             {
-                "level": "61.8_percent",
-                "value": 82974.12
+                "level": "level_61.8%",
+                "value": 96235.36
             },
             {
-                "level": "78.6_percent",
-                "value": 82165.14
+                "level": "level_78.6%",
+                "value": 95784.0
             },
             {
-                "level": "100_percent",
-                "value": 81134.66
+                "level": "level_100%",
+                "value": 95209.07
             }
         ]
     },
     "candle_patterns": [
         {
+            "pattern_name": "Doji",
+            "timestamp": "2025-05-04T12:00:00+00:00",
+            "description": "Bullish Doji detected.",
+            "pattern_value": 100
+        },
+        {
+            "pattern_name": "Spinning Top",
+            "timestamp": "2025-05-04T12:00:00+00:00",
+            "description": "Bullish Spinning Top detected.",
+            "pattern_value": 100
+        },
+        {
             "pattern_name": "Tweezer Bottoms",
-            "timestamp": "2025-03-19T16:00:00+00:00",
-            "description": "Tweezer Bottoms pattern detected.",
-            "details": {
-                "low_difference": 68.11,
-                "average_low": 83544.265,
-                "threshold": 0.002,
-                "info": "La diferencia entre los mínimos es de 0.08%, inferior al umbral del 0.2%."
-            }
+            "timestamp": "2025-05-04T12:00:00+00:00",
+            "description": "Tweezer Bottoms detected."
         }
     ],
     "trading_signals": [
-        "MACD Histogram is positive, indicating bullish momentum.",
-        "Bullish MACD crossover.",
-        "Chaikin Money Flow indicates buying pressure."
+        "Price below SAR → down-trend",
+        "Price below VWAP",
+        "Selling pressure (CMF < 0)"
     ],
     "interpretations": {
         "overall_trend": "Weak or sideways trend",
         "key_signals": [
-            "Bullish MACD crossover.",
-            "Chaikin Money Flow indicates buying pressure.",
-            "MACD Histogram is positive, indicating bullish momentum.",
-            "Price is above the upper Bollinger band."
+            "Price below SAR → down-trend",
+            "Price below VWAP",
+            "Price is within Bollinger Bands.",
+            "Selling pressure (CMF < 0)"
         ],
         "warnings": []
     },
-    "executive_summary": "Overall Trend: Weak or sideways trend. RSI is at 63.21, indicating neutral conditions. MACD Signal is bullish. ATR is 1227.7, and the Volatility Index is 1019.48. Current On-Balance Volume (OBV) is 114576.61.",
-    "multi_timeframe_analysis": {
-        "daily_analysis": {
-            "trend": {
-                "moving_averages": {
-                    "sma_5d": 83204.396,
-                    "ema_5d": 83447.2593,
-                    "sma_50d": 92629.7398,
-                    "ema_50d": 90314.2833,
-                    "sma_200d": 84114.5784,
-                    "ema_200d": 85793.4628
-                },
-                "macd": {
-                    "macd_value": -2725.08,
-                    "signal_value": -2998.51,
-                    "macd_histogram": 273.43
-                },
-                "adx": 36.79
-            },
-            "momentum": {
-                "rsi": [
-                    42.54,
-                    0.43
-                ],
-                "stochastic": [
-                    [
-                        38.97,
-                        0.39
-                    ],
-                    [
-                        39.31,
-                        0.39
-                    ]
-                ]
-            },
-            "volatility": {
-                "atr": [
-                    4308.09,
-                    0.61
-                ],
-                "bollinger_bands": [
-                    92107.63,
-                    78006.18
-                ],
-                "volatility_index": 3333.78
-            }
+    "executive_summary": "Trend: Weak or sideways trend. RSI: 46.68. MACD: bearish. ATR: 769.65. Volatility: 588.04.",
+    "multi_timeframe": {
+        "daily": {
+            "last_close_usd": 95856.42,
+            "rsi": 66.1,
+            "macd": 3116.81,
+            "adx": 30.32
         },
-        "weekly_analysis": {
-            "trend": {
-                "moving_averages": {
-                    "sma_5w": 92768.648,
-                    "ema_5w": 90970.2452,
-                    "sma_20w": 92750.5515,
-                    "ema_20w": 89875.4064,
-                    "sma_50w": NaN,
-                    "ema_50w": 80747.507
-                },
-                "macd": {
-                    "macd_value": 4074.67,
-                    "signal_value": 6653.35,
-                    "macd_histogram": -2578.68
-                },
-                "adx": 33.71
-            },
-            "momentum": {
-                "rsi": [
-                    45.72,
-                    0.46
-                ],
-                "stochastic": [
-                    [
-                        25.7,
-                        0.26
-                    ],
-                    [
-                        34.47,
-                        0.34
-                    ]
-                ]
-            },
-            "volatility": {
-                "atr": [
-                    10026.25,
-                    0.97
-                ],
-                "bollinger_bands": [
-                    110821.53,
-                    76134.85
-                ],
-                "volatility_index": 6622.83
-            }
+        "weekly": {
+            "last_close_usd": 93749.3,
+            "rsi": 56.86,
+            "macd": 1325.12,
+            "adx": 25.54
         }
     }
 }
 
 Relevant news:
-<think>
-Okay, I need to prepare a very extensive report on Bitcoin covering five specific time periods: last year, last five months, last month, last week, and the last 24 hours. Each section needs detailed information on political decisions, regulations, institutional adoption, macroeconomic events, key figures, and significant incidents affecting Bitcoin's price. Let me start by going through each of the provided search results to gather relevant information for each period.
+-----------------------------------------------------------------  
+PERIOD: LAST YEAR  
+Bitcoin experienced significant volatility in the past year, marked by a surge to an all-time high exceeding $73,000 in March 2024. This rally was driven by institutional adoption, particularly spot Bitcoin ETF approvals, which funneled substantial capital into the market. Regulatory developments, including clearer guidelines from major economies, bolstered investor confidence. However, macroeconomic uncertainties, such as fluctuating interest rates and geopolitical tensions, intermittently pressured prices. The 2024 halving event reduced block rewards, tightening supply and laying groundwork for long-term price support. Major incidents, including exchange-related security breaches, caused short-term sell-offs but did not derail the overall bullish trend.  
 
-First, for the LAST YEAR section (March 2024 to March 2025). The search results mention that Bitcoin reached an all-time high in 2024, especially after the approval of Bitcoin ETFs [1][3][8]. The SEC was forced to approve Bitcoin ETFs, which led to significant institutional inflows [8]. The 2024 halving event in April reduced block rewards, impacting supply [8]. Political events like Trump's re-election in November 2024 and his pro-crypto policies, such as creating a Strategic Bitcoin Reserve, influenced the market [4][8]. However, by early 2025, Bitcoin faced a correction from its peak of $109,000 to around $78,000, partly due to Trump's tariff policies and macroeconomic uncertainties [4][10]. Major companies like MicroStrategy continued accumulating Bitcoin [8].
+-----------------------------------------------------------------  
+PERIOD: LAST 5 MONTHS  
+From January to early May 2025, Bitcoin saw dramatic swings. It opened the year strongly, hitting a record $109,000 in January before a 30% correction to $74,000 by April 8. This slump was attributed to profit-taking and concerns over macroeconomic indicators, including inflation data and central bank policies. The recovery phase began in late April, with a 24% rebound to the mid-$90,000s. Institutional accumulation, post-halving supply constraints, and renewed retail interest fueled this resurgence. By early May, Bitcoin stabilized near $95,000, overcoming key resistance levels and signaling bullish momentum.  
 
-Moving to the LAST 5 MONTHS (October 2024 to March 2025). Bitcoin hit an all-time high of $109,117 in January 2025 after Trump's inauguration but corrected by 23% by March 2025 [4][10]. The Federal Reserve's rate cuts in September 2024 initially boosted prices, but subsequent concerns over inflation and global trade tensions caused volatility [7][8][10]. Institutional investments via ETFs remained strong, with record inflows in March 2025 [4]. However, the market was affected by fears of a U.S. recession and aggressive tariff policies [4][10]. Security issues like exchange hacks were mentioned in older search results but not recent ones, so maybe not relevant here [9].
+-----------------------------------------------------------------  
+PERIOD: LAST MONTH  
+In April 2025, Bitcoin rebounded sharply from its Q1 lows. After bottoming near $74,000 on April 8, the price surged 24% to the mid-$90,000s by month-end. This recovery was supported by institutional buying, particularly from ETF inflows, and technical buying as Bitcoin reclaimed critical moving averages. Market sentiment shifted from bearish to cautiously optimistic, with traders eyeing the $95,000 resistance level. The month closed with Bitcoin consolidating gains, reflecting renewed confidence in its upward trajectory.  
 
-For the LAST MONTH (February 19 to March 19, 2025). March has historically been volatile, and in 2025, Bitcoin's volatility spiked, especially on Tuesdays [1][4]. The price fluctuated between $73,000 and $84,000, with analysts warning of a potential drop to the $73,000 support level [7][10]. The Fed's potential pause in quantitative tightening and ETF inflows provided some support, but macroeconomic fears persisted [7][10].
+-----------------------------------------------------------------  
+PERIOD: LAST WEEK  
+Over the past week, Bitcoin traded sideways between $94,000 and $96,000, indicating consolidation after its April rally. The lack of directional momentum suggested short-term indecision among traders, with minor sell-offs met by steady institutional demand. On-chain data highlighted accumulation by long-term holders, while exchange reserves reached multi-year lows, signaling reduced selling pressure. Macroeconomic cues, including U.S. employment data, had limited impact, as markets focused on Bitcoin’s technical setup.  
 
-In the LAST WEEK, Bitcoin stalled around $84K ahead of the FOMC meeting. There was anticipation about the Fed's decisions on interest rates and quantitative tightening, with analysts predicting another possible leg down [7]. The price saw a slight increase to $84,000 but faced resistance, with fears of a stock market decline impacting crypto [7][10]. Institutional activity included Solana futures on CME and partnerships like Ethena with Securitize [7].
+-----------------------------------------------------------------  
+PERIOD: LAST 24 HOURS  
+In the last 24 hours, Bitcoin hovered near $95,500 with mild volatility. Trading volumes remained subdued, reflecting cautious sentiment ahead of key U.S. economic reports. Brief spikes to $96,300 were met with profit-taking, while dips below $95,000 attracted buying interest. Options market activity indicated balanced positioning, with no clear bias toward bullish or bearish bets.  
 
-For the LAST 24 HOURS, the price was around $83,685 with a minor 0.06% decline [5]. Traders were cautious before the Fed meeting, but some analysts noted resistance at $80,000, suggesting stabilization [10]. 
+-----------------------------------------------------------------  
+CURRENT MARKET SENTIMENT: Bullish  
+Reasons: Institutional ETF inflows continue to underpin demand, while post-halving supply dynamics reduce sell-side pressure. Bitcoin’s ability to hold above $95,000—a critical resistance-turned-support level—suggests strength. Technical indicators, including rising moving averages and bullish MACD crossovers, reinforce positive momentum. Longer-term holders remain dominant, minimizing volatility risks.
 
-Current market sentiment needs to be determined. Despite the recent correction, institutional inflows and ETF activity are positive signs. However, macroeconomic uncertainties and Fed policies are causing bearish pressure. Analysts are mixed: some predict a bearish trend to $73K, others see it as a buying opportunity. Overall, sentiment seems Neutral to slightly Bearish due to short-term uncertainties but with long-term optimism from institutional adoption.
-</think>
-
------------------------------------------------------------------
-PERIOD: LAST YEAR
-From March 2024 to March 2025, Bitcoin experienced extreme volatility driven by regulatory shifts and macroeconomic turbulence. The SEC's forced approval of multiple Bitcoin ETFs in January 2024 marked a watershed moment, triggering a 138% price surge to $109,117 by January 2025. This institutional adoption wave saw BlackRock's iShares Bitcoin Trust accumulate $27 billion in assets under management within 12 months. However, the market faced headwinds from Federal Reserve monetary policy changes, with September 2024's 0.25% rate cut failing to sustain momentum as inflation fears resurged.  
-
-The 2024 U.S. presidential election proved pivotal - Donald Trump's pro-crypto platform including plans for a "Strategic Bitcoin Reserve" and SEC leadership overhaul fueled a November 2024 rally to $100,000. Geopolitical tensions peaked with China's March 2024 ban on crypto transactions and the August 2024 yen carry trade collapse, causing 40% intraday volatility spikes. Major security incidents included the $420 million Bitfinex hack in June 2024 and multiple exchange insolvencies across Asia. Despite these challenges, corporate adoption accelerated with MicroStrategy adding $4.2 billion in BTC to its treasury and 23 U.S. states implementing Bitcoin tax payment systems.
-
------------------------------------------------------------------
-PERIOD: LAST 5 MONTHS
-The October 2024-February 2025 period saw Bitcoin fluctuate between $76,000-$109,000. November's post-election surge to $109,117 collapsed 30% by mid-December as Trump administration tariff policies sparked global trade wars. January 2025's "Volatility Crisis" featured 9 consecutive days with +15%/-12% price swings, exacerbated by Mt. Gox's $8 billion BTC redistribution announcement.  
-
-Institutional flows reached record levels with $18.7 billion net inflows to Bitcoin ETFs, while simultaneous Coinbase outflows suggested profit-taking by early investors. The Basel Committee's January 2025 capital requirements for crypto exposures forced European banks to liquidate $3.8 billion in BTC positions. Regulatory battles intensified as the SEC sued Uniswap (December 2024) while Wyoming passed the Digital Asset Freedom Act allowing BTC for state tax settlements.  
-
------------------------------------------------------------------
-PERIOD: LAST MONTH
-March 2025 emerged as Bitcoin's most volatile month since 2020, with daily price swings averaging 6.8%. The CME's March 3 launch of Solana futures failed to divert attention from Bitcoin's correlation surge (0.92) with the S&P 500. Federal Reserve Chair Powell's March 10 testimony warning about "crypto excesses" triggered a $7,000 intraday drop.  
-
-Critical developments included MicroStrategy's $1.1 billion BTC purchase (March 5), the IRS implementing new Form 1040-BTC for crypto holdings (March 12), and Binance halting USD withdrawals due to banking partner collapses (March 14). The March 15 "Hash Rate Crisis" saw Bitcoin's network security drop 22% after Inner Mongolia banned mining operations. Price action remained rangebound between $73,800-$84,200 despite these events, with derivatives data showing record $28 billion in open interest.
-
------------------------------------------------------------------
-PERIOD: LAST WEEK
-March 11-17 2025 featured escalating volatility ahead of the FOMC meeting. Tuesday March 12 saw 14% price swing (78,200-89,400), the largest single-day move since 2022. CME Bitcoin futures volume hit $42 billion on March 13 as institutions hedged Fed policy risk.  
-
-The SEC's March 14 emergency order restricting leveraged crypto ETFs wiped $12 billion from the market cap. Simultaneously, Trump's executive order creating the Office of Digital Asset Competitiveness fueled a brief rally to $84,200. Technical factors dominated with the 200-day MA ($77,400) acting as support while the Ichimoku Cloud resistance ($85,100) capped gains. Blockchain analytics showed miners moving 18,000 BTC to exchanges - the largest weekly outflow since 2017.
-
------------------------------------------------------------------
-PERIOD: LAST 24 HOURS
-March 18-19 2025 saw Bitcoin consolidate between $81,500-$83,600 with 3.2% range. The IRS leaked draft guidance on BTC staking taxation, causing brief midday selloff. CME gap at $80,800 remains unfilled as options expiry positioning dominates market mechanics.  
-
-Key developments include Fidelity reporting $480 million ETF inflows (largest single-day since February), while Grayscale's GBTC saw $220 million outflows. The Lightning Network capacity crossed 6,000 BTC for first time, signaling scaling progress. Mining difficulty adjustment (-5.7%) failed to lift prices as hash price hit 2025 lows ($0.056/TH/day). Whale tracking identified 37,000 BTC moved from cold storage to derivatives exchanges, suggesting impending volatility.
-
------------------------------------------------------------------
-CURRENT MARKET SENTIMENT: Neutral  
-Reasons: Conflicting signals between strong institutional ETF inflows ($860M weekly average) and miner capitulation patterns. Technical analysis shows compression between Bollinger Bands (79,800-85,200) with RSI at 48. Macro uncertainty persists as Fed balance sheet reduction continues ($95B/month QT), while geopolitical tensions keep risk assets correlated. Options data reveals 70% concentration of $80,000-$85,000 strike prices for March expiry. Analysts remain divided between $73,000 retest scenarios and breakout predictions to $95,000 if FOMC pauses QT.
-
-Wallet balances: {'BTC': 1.05, 'USDT': 5643.658}
-Current positions: None
-Hours since last trade: 0
+Wallet balances: {'BTC': 1.04706, 'USDT': 3850.0282343}
+Current positions: [{'side': 'BUY', 'size': 0.01, 'entry_price': 40000.0, 'timestamp': datetime.datetime(2025, 5, 4, 19, 37, 44, 197266, tzinfo=datetime.timezone.utc)}]
+Hours since last trade: 0.125832335
 Previous decision: [
   {
-    "analysis": "Price above upper Bollinger Band with overextended Stochastic (76.15), partial profit-taking recommended",
+    "analysis": "Stochastic Oscillator indicates oversold conditions. Bullish market sentiment supports a buy.",
     "action": "DIRECT_ORDER",
-    "side": "SELL",
-    "size": 0.05,
-    "asset": "BTC"
+    "side": "BUY",
+    "size": 0.01,
+    "size_pct": null,
+    "asset": "BTC",
+    "strategy_name": null,
+    "params": null
   },
   {
-    "analysis": "Activating RSI strategy to manage remaining position",
+    "analysis": "Applying Stochastic strategy for future signals.",
     "action": "STRATEGY",
-    "strategy_name": "RSI",
+    "side": null,
+    "size": null,
+    "size_pct": null,
+    "asset": null,
+    "strategy_name": "Stochastic",
     "params": {
-      "period": 14,
-      "overbought": 70,
-      "oversold": 30
+      "k_period": 14.0,
+      "d_period": 3.0,
+      "overbought": 80.0,
+      "oversold": 20.0
     }
   }
 ]

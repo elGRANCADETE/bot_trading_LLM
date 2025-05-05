@@ -1,157 +1,127 @@
 # tfg_bot_trading/executor/strategies/macd/macd_runner.py
 
+import logging
 import threading
 import time
-import logging
-import numpy as np
-import pandas as pd
-import os
-import json
-from typing import Dict, Any
+from typing import Any, Callable, Dict, Literal, Optional
 
+from pydantic import ValidationError
+from tenacity import retry, stop_after_attempt, wait_exponential
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
+
 from executor.binance_api import connect_binance_production, fetch_klines_df
+from executor.strategies.macd.macd import compute_macd_signal, MACDParams
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("MACDRunner")
+logger.setLevel(logging.INFO)
 
-MACD_STATE_FILE = os.path.join(os.path.dirname(__file__), "macd_state.json")
-
-def default_converter(o):
-    """Converts NumPy types to native Python types for json.dump()."""
-    if isinstance(o, np.integer):
-        return int(o)
-    elif isinstance(o, np.floating):
-        return float(o)
-    elif isinstance(o, np.bool_):
-        return bool(o)
-    return str(o)
-
-def load_macd_state() -> Dict[str, Any]:
+# ─── Base Runner ────────────────────────────────────────────────────────────
+class BaseStrategyRunner(threading.Thread):
     """
-    Loads the persistent state (e.g. 'last_signal') for MACD.
-    If it does not exist, returns a state with last_signal='HOLD'.
+    Abstract runner for periodic strategy execution:
+      - connect to client with retry
+      - fetch data with retry
+      - compute signal
+      - emit via callback
     """
-    if not os.path.exists(MACD_STATE_FILE):
-        return {"last_signal": "HOLD"}
-    try:
-        with open(MACD_STATE_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {"last_signal": "HOLD"}
-
-def save_macd_state(state: Dict[str, Any]) -> None:
-    """Saves the state in macd_state.json."""
-    try:
-        with open(MACD_STATE_FILE, "w") as f:
-            json.dump(state, f, default=default_converter)
-    except Exception as e:
-        logger.error(f"[MACDRunner] Error saving state: {e}")
-
-
-class MACDRunner(threading.Thread):
-    """
-    Thread that continuously runs the MACD logic by downloading candles
-    and recalculating the signal on each iteration.
-
-    - Checks MACD vs. signal crossovers.
-    - If the signal changes (BUY/SELL) compared to the previous one, it is saved in a state.
-    """
-
     def __init__(
         self,
         strategy_name: str,
-        strategy_params: Dict[str, Any],
+        raw_params: Dict[str, Any],
+        on_signal: Callable[[str, Dict[str, Any], Literal["BUY","SELL","HOLD"]], None],
+        symbol: str = "BTCUSDT",
         interval_seconds: float = 30.0,
+        client: Optional[Client] = None,
         *args,
         **kwargs
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(daemon=True, *args, **kwargs)
         self.strategy_name = strategy_name
-        self.strategy_params = strategy_params
-        self.interval_seconds = interval_seconds
+        self.symbol = symbol
+        self.on_signal = on_signal
+        self.interval = interval_seconds
         self.stop_event = threading.Event()
-        self.daemon = True  # So that it ends if the main thread dies
+        # Allow client injection for testing
+        self._client: Client | None = client
+        self.logger = logging.getLogger(f"{self.__class__.__name__}.{strategy_name}")
+        # Validate parameters
+        try:
+            self.params = self._validate_params(raw_params)
+        except ValidationError as e:
+            self.logger.error("Invalid parameters: %s", e)
+            raise
+
+    @retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def _connect_client(self) -> Client:
+        """Connect to Binance with retry on transient errors."""
+        if self._client is None:
+            self._client = connect_binance_production()
+        return self._client
+
+    @retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def _fetch_klines(self) -> Any:
+        """Download 4h klines; error if empty."""
+        client = self._connect_client()
+        df = fetch_klines_df(client, self.symbol,
+                             Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+        if df.empty:
+            raise ValueError("Empty kline data")
+        return df
 
     def run(self):
-        logger.info(f"[MACDRunner] Starting thread for '{self.strategy_name}'.")
-        try:
-            self.client = connect_binance_production()
-        except Exception as e:
-            logger.error(f"[MACDRunner] Error connecting to Binance Production: {e}")
-            return
-
+        self.logger.info("'%s' started; interval=%ss", self.strategy_name, self.interval)
         while not self.stop_event.is_set():
+            start = time.perf_counter()
             try:
-                state = load_macd_state()
-                last_signal = state.get("last_signal", "HOLD")
+                df = self._fetch_klines()
+                signal = self._compute_signal(df)
+                self.logger.info("Signal => %s", signal)
+                params_dump = self.params.model_dump()
+                self.on_signal(self.strategy_name, params_dump, signal)
 
-                df_klines = fetch_klines_df(
-                    self.client,
-                    "BTCUSDT",
-                    Client.KLINE_INTERVAL_4HOUR,
-                    "100 days ago UTC"
-                )
-                if df_klines.empty:
-                    logger.warning("[MACDRunner] No candles => skipping iteration.")
-                else:
-                    new_signal = self._compute_macd_signal(df_klines, self.strategy_params)
+            except BinanceAPIException as e:
+                self.logger.warning("Binance API error: %s", e)
+            except ValueError as e:
+                self.logger.warning("Data issue: %s; skipping.", e)
+            except Exception:
+                self.logger.exception("Unexpected error in loop")
 
-                    # If the signal is BUY/SELL and different from the previous one, we persist it
-                    if new_signal in ["BUY", "SELL"] and new_signal != last_signal:
-                        logger.info(f"[MACDRunner] Signal changed from {last_signal} to {new_signal}")
-                        state["last_signal"] = new_signal
-                        save_macd_state(state)
-                    else:
-                        logger.debug(f"[MACDRunner] No signal change => {last_signal}")
+            elapsed = time.perf_counter() - start
+            delay = max(0, self.interval - elapsed)
+            self.stop_event.wait(delay)
 
-                time.sleep(self.interval_seconds)
+        self.logger.info("'%s' stopped.", self.strategy_name)
 
-            except Exception as e:
-                logger.error(f"[MACDRunner] Error in loop: {e}")
-                # The loop can either continue or abort; here we continue
-
-        logger.info(f"[MACDRunner] Thread '{self.strategy_name}' finished.")
-
-    def _compute_macd_signal(self, df_klines: pd.DataFrame, params: Dict[str, Any]) -> str:
-        """Internal logic to calculate MACD, same as in macd.py but in a loop."""
-        fast = params.get("fast", 12)
-        slow = params.get("slow", 26)
-        signal_p = params.get("signal", 9)
-
-        needed = max(fast, slow, signal_p)
-        if len(df_klines) < needed:
-            logger.warning("[MACDRunner] Insufficient candles => HOLD")
-            return "HOLD"
-
-        df = df_klines.rename(columns={
-            "open_time": "date",
-            "high": "high_usd",
-            "low": "low_usd",
-            "close": "closing_price_usd"
-        }).sort_values("date").reset_index(drop=True)
-
-        df["ema_fast"] = df["closing_price_usd"].ewm(span=fast, adjust=False).mean()
-        df["ema_slow"] = df["closing_price_usd"].ewm(span=slow, adjust=False).mean()
-        df["macd"] = df["ema_fast"] - df["ema_slow"]
-        df["signal"] = df["macd"].ewm(span=signal_p, adjust=False).mean()
-
-        if pd.isna(df["macd"].iloc[-1]) or pd.isna(df["signal"].iloc[-1]):
-            logger.warning("[MACDRunner] MACD or signal is NaN => HOLD")
-            return "HOLD"
-
-        prev_macd = df["macd"].iloc[-2]
-        prev_signal = df["signal"].iloc[-2]
-        last_macd = df["macd"].iloc[-1]
-        last_signal = df["signal"].iloc[-1]
-
-        # Decision rules
-        if prev_macd < prev_signal and last_macd > last_signal:
-            return "BUY"
-        elif prev_macd > prev_signal and last_macd < last_signal:
-            return "SELL"
-        else:
-            return "HOLD"
-
-    def stop(self):
-        """Commands the thread to stop."""
+    def stop(self) -> None:
+        """Signal the thread to stop; join externally if desired."""
         self.stop_event.set()
+
+    def _validate_params(self, raw: Dict[str, Any]) -> MACDParams:
+        raise NotImplementedError
+
+    def _compute_signal(self, df: Any) -> Literal["BUY","SELL","HOLD"]:
+        raise NotImplementedError
+
+
+# ─── MACD Runner ─────────────────────────────────────────────────────────────
+class MACDRunner(BaseStrategyRunner):
+    def __init__(
+        self,
+        strategy_name: str,
+        raw_params: Dict[str, Any],
+        on_signal: Callable[[str, Dict[str, Any], Literal["BUY","SELL","HOLD"]], None],
+        interval_seconds: float = 30.0,
+        symbol: str = "BTCUSDT",
+        client: Optional[Client] = None,
+        *args,
+        **kwargs
+    ):
+        super().__init__(strategy_name, raw_params, on_signal, symbol,
+                         interval_seconds, client, *args, **kwargs)
+
+    def _validate_params(self, raw: Dict[str, Any]) -> MACDParams:
+        return MACDParams(**raw)
+
+    def _compute_signal(self, df: Any) -> Literal["BUY","SELL","HOLD"]:
+        return compute_macd_signal(df, self.params)

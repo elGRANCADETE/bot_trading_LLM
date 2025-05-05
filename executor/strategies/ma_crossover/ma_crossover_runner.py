@@ -1,149 +1,118 @@
-# tfg_bot_trading/executor/strategies/ma_crossover/ma_crossover_runner.py
-
-import threading
-import time
 import logging
-import numpy as np
+import threading
+from typing import Any, Dict, Literal, Protocol, Optional
+
 import pandas as pd
-import os
-import json
-from typing import Dict, Any
-
+from tenacity import retry, stop_after_attempt, wait_exponential
 from binance.client import Client
+
 from executor.binance_api import connect_binance_production, fetch_klines_df
+from executor.strategies.ma_crossover.ma_crossover import run_strategy, MACrossoverParams
 
-logger = logging.getLogger(__name__)
+# ─── Callback Protocol ─────────────────────────────────────────────────────────
+class SignalCallback(Protocol):
+    def __call__(
+        self,
+        name: str,
+        params: Dict[str, Any],
+        signal: Literal["BUY", "SELL", "HOLD"]
+    ) -> None:
+        ...
 
-MACROSS_STATE_FILE = os.path.join(os.path.dirname(__file__), "ma_crossover_state.json")
+# ─── Logger Setup ─────────────────────────────────────────────────────────────
+logger = logging.getLogger("MACrossoverRunner")
 
-def default_converter(o):
-    """Converts NumPy types to Python types for json.dump()."""
-    if isinstance(o, np.integer):
-        return int(o)
-    elif isinstance(o, np.floating):
-        return float(o)
-    elif isinstance(o, np.bool_):
-        return bool(o)
-    return str(o)
+# ─── Data Fetch with Retry ────────────────────────────────────────────────────
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def _fetch_klines(client: Client) -> pd.DataFrame:
+    """
+    Fetch 4h candlestick data with retry; raises ValueError if empty.
+    """
+    df = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+    if df.empty:
+        raise ValueError("Empty kline data")
+    return df
 
-def load_macross_state() -> Dict[str, Any]:
-    """Loads a persistent state (e.g. 'last_signal') for MA Crossover."""
-    if not os.path.exists(MACROSS_STATE_FILE):
-        return {"last_signal": "HOLD"}
-    try:
-        with open(MACROSS_STATE_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {"last_signal": "HOLD"}
-
-def save_macross_state(state: Dict[str, Any]) -> None:
-    """Saves the state to MACROSS_STATE_FILE."""
-    try:
-        with open(MACROSS_STATE_FILE, "w") as f:
-            json.dump(state, f, default=default_converter)
-    except Exception as e:
-        logger.error(f"[MACrossoverRunner] Error saving state: {e}")
-
-
+# ─── MA Crossover Runner ──────────────────────────────────────────────────────
 class MACrossoverRunner(threading.Thread):
     """
-    Thread that continuously runs the MA Crossover logic,
-    recalculating the signal every 'interval_seconds' seconds.
-    """
+    Thread that periodically:
+      1) fetches data,
+      2) computes signal via run_strategy,
+      3) emits signal via on_signal callback.
 
+    Responsibilities:
+    - No persistence of state
+    - No direct order execution
+    """
     def __init__(
         self,
         strategy_name: str,
-        strategy_params: Dict[str, Any],
+        raw_params: Dict[str, Any],
+        on_signal: Optional[SignalCallback] = None,
         interval_seconds: float = 30.0,
-        *args,
-        **kwargs
+        *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
+        self.logger = logging.getLogger(f"MACrossoverRunner.{strategy_name}")
+
+        # 1) Validate parameters
+        try:
+            self.params = MACrossoverParams(**raw_params)
+        except Exception as e:
+            self.logger.error("Invalid MA Crossover params: %s", e, exc_info=True)
+            raise
+
         self.strategy_name = strategy_name
-        self.strategy_params = strategy_params
-        self.interval_seconds = interval_seconds
+        # 2) Allow on_signal to be optional
+        self.on_signal = on_signal or (lambda *_: None)
+        self.interval = interval_seconds
         self.stop_event = threading.Event()
         self.daemon = True
 
-    def run(self):
-        logger.info(f"[MACrossoverRunner] Starting thread for '{self.strategy_name}'.")
-        try:
-            self.client = connect_binance_production()
-        except Exception as e:
-            logger.error(f"[MACrossoverRunner] Error connecting to Binance Production: {e}")
-            return
+        # 3) Prepare lazy client
+        self._client: Optional[Client] = None
 
+    @property
+    def client(self) -> Client:
+        """
+        Lazily connect to Binance production and cache the client.
+        """
+        if self._client is None:
+            try:
+                self._client = connect_binance_production()
+            except Exception as e:
+                self.logger.error("Error connecting to Binance: %s", e, exc_info=True)
+                raise
+        return self._client
+
+    def run(self):
+        self.logger.info("'%s' started; interval=%ss", self.strategy_name, self.interval)
         while not self.stop_event.is_set():
             try:
-                state = load_macross_state()
-                last_signal = state.get("last_signal", "HOLD")
+                # 1) Fetch market data
+                df = _fetch_klines(self.client)
+                # 2) Compute signal
+                signal = run_strategy("", self.params.model_dump())
+                self.logger.info("Signal => %s", signal)
+                # 3) Emit via callback
+                self.on_signal(self.strategy_name, self.params.model_dump(), signal)
 
-                df_klines = fetch_klines_df(
-                    self.client,
-                    "BTCUSDT",
-                    Client.KLINE_INTERVAL_4HOUR,
-                    "100 days ago UTC"
-                )
-                if df_klines.empty:
-                    logger.warning("[MACrossoverRunner] No candlesticks available => skipping iteration.")
-                else:
-                    new_signal = self._compute_crossover_signal(df_klines, self.strategy_params)
+            except ValueError as e:
+                # Data issues: skip this cycle, perhaps back off longer
+                self.logger.warning("Data fetch error: %s; will retry next cycle.", e)
+            except Exception:
+                # Unexpected: log full traceback
+                self.logger.exception("Unexpected error in loop")
+            finally:
+                # 4) Wait with early wake on stop()
+                self.stop_event.wait(self.interval)
 
-                    # If the signal changes to BUY/SELL, save it
-                    if new_signal in ["BUY", "SELL"] and new_signal != last_signal:
-                        logger.info(f"[MACrossoverRunner] Signal changed from {last_signal} to {new_signal}")
-                        state["last_signal"] = new_signal
-                        save_macross_state(state)
-                    else:
-                        logger.debug(f"[MACrossoverRunner] No signal change => {last_signal}")
+        self.logger.info("'%s' stopped.", self.strategy_name)
 
-                time.sleep(self.interval_seconds)
-
-            except Exception as e:
-                logger.error(f"[MACrossoverRunner] Error in loop: {e}")
-                # continue the loop or exit; here we continue
-
-        logger.info(f"[MACrossoverRunner] Thread '{self.strategy_name}' finished.")
-
-    def _compute_crossover_signal(self, df_klines: pd.DataFrame, params: Dict[str, Any]) -> str:
-        """Internal logic similar to run_strategy, but in a loop."""
-        fast = params.get("fast", 10)
-        slow = params.get("slow", 50)
-
-        if slow <= fast:
-            logger.warning("(MA Crossover) 'slow' <= 'fast'; unusual configuration.")
-
-        if len(df_klines) < max(fast, slow):
-            logger.warning("[MACrossoverRunner] Insufficient candlesticks => HOLD")
-            return "HOLD"
-
-        df = df_klines.rename(columns={
-            "open_time": "date",
-            "high": "high_usd",
-            "low": "low_usd",
-            "close": "closing_price_usd"
-        }).sort_values("date").reset_index(drop=True)
-
-        df["fast_ma"] = df["closing_price_usd"].rolling(window=fast, min_periods=fast).mean()
-        df["slow_ma"] = df["closing_price_usd"].rolling(window=slow, min_periods=slow).mean()
-
-        if pd.isna(df["fast_ma"].iloc[-1]) or pd.isna(df["slow_ma"].iloc[-1]):
-            logger.warning("[MACrossoverRunner] Final moving averages are NaN => HOLD")
-            return "HOLD"
-
-        prev_fast = df["fast_ma"].iloc[-2]
-        prev_slow = df["slow_ma"].iloc[-2]
-        last_fast = df["fast_ma"].iloc[-1]
-        last_slow = df["slow_ma"].iloc[-1]
-
-        if prev_fast < prev_slow and last_fast > last_slow:
-            return "BUY"
-        elif prev_fast > prev_slow and last_fast < last_slow:
-            return "SELL"
-        else:
-            return "HOLD"
-
-    def stop(self):
-        """Signals the thread to stop."""
+    def stop(self, timeout: Optional[float] = None):
+        """
+        Signal the thread to stop and optionally wait for it to finish.
+        """
         self.stop_event.set()
+        self.join(timeout)

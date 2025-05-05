@@ -1,156 +1,132 @@
-# tfg_bot_trading/executor/strategies/stochastic/stochastic_runner.py
-
+import logging
 import threading
 import time
-import logging
-import os
-import json
-import numpy as np
-import pandas as pd
-from typing import Dict, Any
+from typing import Any, Callable, Dict, Literal, Optional
 
-import ccxt  # For fetch_ohlcv
-from executor.binance_api import connect_binance_production  # If you prefer binance_api instead of ccxt, adjust as needed.
+from pydantic import BaseModel, Field, ValidationError, ConfigDict, model_validator
+from binance.exceptions import BinanceAPIException
 
-logger = logging.getLogger(__name__)
+from executor.strategies.stochastic.stochastic import run_strategy
 
-STOCHASTIC_STATE_FILE = os.path.join(os.path.dirname(__file__), "stochastic_state.json")
+logger = logging.getLogger("StochasticRunner")
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
 
-def default_converter(o):
-    """Convert numpy data types to native Python types for JSON serialization."""
-    if isinstance(o, np.integer):
-        return int(o)
-    elif isinstance(o, np.floating):
-        return float(o)
-    elif isinstance(o, np.bool_):
-        return bool(o)
-    return str(o)
-
-def load_stochastic_state() -> Dict[str, Any]:
+# ─── Params Model ────────────────────────────────────────────────────────────
+class StochasticParams(BaseModel):
     """
-    Loads the Stochastic persistent state from a JSON file. If not found, returns last_signal='HOLD'.
+    Configuration for the Stochastic strategy.
     """
-    if not os.path.exists(STOCHASTIC_STATE_FILE):
-        return {"last_signal": "HOLD"}
-    try:
-        with open(STOCHASTIC_STATE_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {"last_signal": "HOLD"}
+    model_config = ConfigDict(strict=True)
+    k_period: int = Field(14, ge=1, description="Window size for %K calculation")
+    d_period: int = Field(3, ge=1, description="Window size for %D smoothing")
+    overbought: float = Field(80.0, ge=0.0, le=100.0, description="Overbought threshold for %K")
+    oversold: float = Field(20.0, ge=0.0, le=100.0, description="Oversold threshold for %K")
+    timeframe: str = Field(default="4h", description="Candlestick timeframe, e.g. '4h' or '1d'")
 
-def save_stochastic_state(state: Dict[str, Any]) -> None:
+    @model_validator(mode='before')
+    def check_thresholds(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Ensure oversold threshold is less than overbought.
+        """
+        ob = values.get("overbought")
+        os = values.get("oversold")
+        if os >= ob:
+            raise ValueError("'oversold' must be less than 'overbought'")
+        return values
+
+# ─── Base Runner ────────────────────────────────────────────────────────────
+class BaseStrategyRunner(threading.Thread):
     """
-    Saves the Stochastic state (e.g. last_signal) to stochastic_state.json.
+    Abstract base for periodic strategy runners.
+
+    Responsibilities:
+      - Validate parameters
+      - Periodically call run_strategy
+      - Emit signals via on_signal callback
+      - Maintain fixed interval and support stop
     """
-    try:
-        with open(STOCHASTIC_STATE_FILE, "w") as f:
-            json.dump(state, f, default=default_converter)
-    except Exception as e:
-        logger.error(f"[StochasticRunner] Error saving state: {e}")
-
-def calculate_stochastic(df: pd.DataFrame, k_period: int, d_period: int) -> pd.DataFrame:
-    """
-    Same logic as in 'stochastic.py'.
-    """
-    if len(df) < k_period:
-        logger.warning("[StochasticRunner] Not enough candles for k_period.")
-        return df
-
-    df["lowest_low"] = df["low"].rolling(window=k_period, min_periods=k_period).min()
-    df["highest_high"] = df["high"].rolling(window=k_period, min_periods=k_period).max()
-
-    if pd.isna(df["lowest_low"].iloc[-1]) or pd.isna(df["highest_high"].iloc[-1]):
-        logger.warning("[StochasticRunner] NaN encountered => insufficient data.")
-        return df
-
-    df["K"] = 100 * ((df["close"] - df["lowest_low"]) / (df["highest_high"] - df["lowest_low"] + 1e-9))
-
-    if len(df) < (k_period + d_period - 1):
-        logger.warning("[StochasticRunner] Not enough candles for d_period.")
-        return df
-
-    df["D"] = df["K"].rolling(window=d_period, min_periods=d_period).mean()
-    return df
-
-class StochasticRunner(threading.Thread):
-    """
-    Thread that continuously runs the Stochastic logic:
-      - Fetches data from ccxt (or binance_api)
-      - Calculates %K, %D
-      - Compares with overbought/oversold thresholds
-      - If there's a new signal (BUY/SELL) compared to the previous one, updates the state
-    """
-
     def __init__(
         self,
         strategy_name: str,
-        strategy_params: Dict[str, Any],
+        raw_params: Dict[str, Any],
+        on_signal: Optional[Callable[[str, Dict[str, Any], Literal["BUY","SELL","HOLD"]], None]] = None,
         interval_seconds: float = 30.0,
         *args,
         **kwargs
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(daemon=True, *args, **kwargs)
         self.strategy_name = strategy_name
-        self.strategy_params = strategy_params
-        self.interval_seconds = interval_seconds
+        self.on_signal = on_signal or (lambda *_: None)
+        self.interval = interval_seconds
         self.stop_event = threading.Event()
-        self.daemon = True
+        self.logger = logging.getLogger(f"{self.__class__.__name__}.{strategy_name}")
+        # Validate and log parameters
+        try:
+            self.params = self._validate_params(raw_params)
+            self.logger.info("Parameters validated: %s", self.params.model_dump())
+        except ValidationError as e:
+            self.logger.error("Invalid parameters: %s", e)
+            raise
+        except Exception as e:
+            self.logger.error("Parameter validation error: %s", e)
+            raise
 
     def run(self):
-        logger.info(f"[StochasticRunner] Starting thread for '{self.strategy_name}' with params={self.strategy_params}")
-        k_period = self.strategy_params.get("k_period", 14)
-        d_period = self.strategy_params.get("d_period", 3)
-        overbought = self.strategy_params.get("overbought", 80)
-        oversold = self.strategy_params.get("oversold", 20)
-        timeframe = self.strategy_params.get("timeframe", "4h")
-
-        # ccxt exchange
-        exchange = ccxt.binance({"enableRateLimit": True})
-
+        self.logger.info("'%s' started; interval=%ss", self.strategy_name, self.interval)
         while not self.stop_event.is_set():
+            start = time.perf_counter()
             try:
-                # Load old state
-                state = load_stochastic_state()
-                last_signal = state.get("last_signal", "HOLD")
+                params_dump = self.params.model_dump()
+                signal = run_strategy("", params_dump)
+                self.logger.info("Signal => %s", signal)
+                self.on_signal(self.strategy_name, params_dump, signal)
+            except BinanceAPIException as e:
+                self.logger.warning("Binance API error: %s", e)
+            except Exception:
+                self.logger.exception("Unexpected error in loop")
+            finally:
+                elapsed = time.perf_counter() - start
+                self.stop_event.wait(max(0, self.interval - elapsed))
+        self.logger.info("'%s' stopped.", self.strategy_name)
 
-                # Download ~60 candles
-                limit_candles = 60
-                ohlcv = exchange.fetch_ohlcv("BTC/USDT", timeframe=timeframe, limit=limit_candles)
-                if not ohlcv:
-                    logger.warning("[StochasticRunner] No ohlcv data => skipping iteration.")
-                else:
-                    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-                    df = df.sort_values("timestamp").reset_index(drop=True)
-
-                    df = calculate_stochastic(df, k_period, d_period)
-                    if "K" in df.columns and "D" in df.columns and not pd.isna(df["K"].iloc[-1]):
-                        last_k = float(df["K"].iloc[-1])
-                        # Decide signal based on %K
-                        if last_k > overbought:
-                            new_signal = "SELL"
-                        elif last_k < oversold:
-                            new_signal = "BUY"
-                        else:
-                            new_signal = "HOLD"
-
-                        # If changed from old => update
-                        if new_signal in ["BUY", "SELL"] and new_signal != last_signal:
-                            logger.info(f"[StochasticRunner] Signal changed from {last_signal} to {new_signal}")
-                            state["last_signal"] = new_signal
-                            save_stochastic_state(state)
-                        else:
-                            logger.debug(f"[StochasticRunner] No change => {last_signal}")
-                    else:
-                        logger.warning("[StochasticRunner] Could not compute final K or D => skipping.")
-
-                time.sleep(self.interval_seconds)
-
-            except Exception as e:
-                logger.error(f"[StochasticRunner] Error in loop => {e}")
-
-        logger.info(f"[StochasticRunner] Thread '{self.strategy_name}' ended.")
-
-    def stop(self):
-        """Signals the thread to stop."""
+    def stop(self) -> None:
+        """
+        Signal the runner to stop after current iteration.
+        """
         self.stop_event.set()
+
+    def _validate_params(self, raw: Dict[str, Any]) -> StochasticParams:
+        """
+        Subclasses implement this to validate raw_params via Pydantic.
+        """
+        raise NotImplementedError
+
+# ─── Stochastic Runner ───────────────────────────────────────────────────────
+class StochasticRunner(BaseStrategyRunner):
+    """
+    Runner for the Stochastic strategy:
+      - Validates config
+      - Periodically computes signal with run_strategy
+    """
+    def __init__(
+        self,
+        strategy_name: str,
+        raw_params: Dict[str, Any],
+        on_signal: Optional[Callable[[str, Dict[str, Any], Literal["BUY","SELL","HOLD"]], None]] = None,
+        interval_seconds: float = 30.0,
+        *args,
+        **kwargs
+    ):
+        super().__init__(strategy_name, raw_params, on_signal, interval_seconds, *args, **kwargs)
+
+    def _validate_params(self, raw: Dict[str, Any]) -> StochasticParams:
+        """
+        Validate raw_params and return StochasticParams.
+        """
+        return StochasticParams(**raw)

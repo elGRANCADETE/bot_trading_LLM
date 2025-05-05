@@ -1,103 +1,132 @@
-# tfg_bot_trading/executor/strategies/macd/macd.py
+# tfg_bot_trading/executor/strategies/macd/macd_runner.py
 
 import logging
-import numpy as np
+import threading
+import time
+from typing import Any, Dict, Literal, Protocol, Optional
+
 import pandas as pd
+from pydantic import ValidationError
+from tenacity import retry, stop_after_attempt, wait_exponential
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
+
 from executor.binance_api import connect_binance_production, fetch_klines_df
+from executor.strategies.ma_crossover.ma_crossover import run_strategy, MACrossoverParams
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-if not logger.hasHandlers():
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+# ─── Callback Protocol ─────────────────────────────────────────────────────────
+class SignalCallback(Protocol):
+    def __call__(
+        self,
+        name: str,
+        params: Dict[str, Any],
+        signal: Literal["BUY", "SELL", "HOLD"]
+    ) -> None:
+        ...
 
-def run_strategy(_ignored_data_json: str, params: dict) -> str:
+# ─── Logger Setup ─────────────────────────────────────────────────────────────
+logger = logging.getLogger("MACrossoverRunner")
+
+# ─── Data Fetch with Retry ────────────────────────────────────────────────────
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def _connect_client() -> Client:
+    """Connect to Binance with retry on transient errors."""
+    return connect_binance_production()
+
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def _fetch_klines(client: Client) -> pd.DataFrame:
     """
-    MACD Strategy (single-run) that ignores data_json and directly downloads candlesticks from Binance Production.
-
-    Expected parameters in 'params':
-      - fast (int): Period for the fast EMA (e.g., 12)
-      - slow (int): Period for the slow EMA (e.g., 26)
-      - signal (int): Period for the MACD EMA (e.g., 9)
-
-    Logic:
-      1) Connect to Binance Production.
-      2) Download ~100 days of 4h candlesticks for BTCUSDT.
-      3) Calculate MACD = EMA(fast) - EMA(slow), and signal = EMA(MACD, signal).
-      4) If MACD crosses above signal => BUY
-         If MACD crosses below signal => SELL
-         Otherwise => HOLD
+    Fetch 4h candlestick data with retry; raises ValueError if empty.
     """
-    # 1) Extract parameters
-    fast = params.get("fast", 12)
-    slow = params.get("slow", 26)
-    signal_p = params.get("signal", 9)
+    df = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+    if df.empty:
+        raise ValueError("Empty kline data")
+    return df
 
-    if slow < fast:
-        logger.warning("(MACD) It is recommended that 'slow' >= 'fast'; received fast=%d, slow=%d", fast, slow)
+# ─── MA Crossover Runner ──────────────────────────────────────────────────────
+class MACrossoverRunner(threading.Thread):
+    """
+    Thread that periodically:
+      1) connects to Binance
+      2) fetches data
+      3) computes signal via run_strategy
+      4) emits signal via on_signal callback
 
-    # 2) Connect to Binance Production
-    try:
-        client = connect_binance_production()
-    except Exception as e:
-        logger.error(f"(MACD) Error connecting to Binance Production: {e}")
-        return "HOLD"
+    Responsibilities:
+    - No persistence of state
+    - No direct order execution
+    """
+    def __init__(
+        self,
+        strategy_name: str,
+        raw_params: Dict[str, Any],
+        on_signal: Optional[SignalCallback] = None,
+        interval_seconds: float = 30.0,
+        client: Optional[Client] = None,
+        *args, **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.logger = logging.getLogger(f"MACrossoverRunner.{strategy_name}")
 
-    # 3) Download ~100 days of 4h candlesticks
-    try:
-        df_klines = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
-        if df_klines.empty:
-            logger.warning("(MACD) No candlesticks obtained => HOLD")
-            return "HOLD"
-    except Exception as e:
-        logger.error(f"(MACD) Error downloading candlesticks: {e}")
-        return "HOLD"
+        # 1) Validate parameters
+        try:
+            self.params = MACrossoverParams(**raw_params)
+        except ValidationError as e:
+            self.logger.error("Invalid MA Crossover params: %s", e, exc_info=True)
+            raise
 
-    needed = max(fast, slow, signal_p)
-    if len(df_klines) < needed:
-        logger.warning(f"(MACD) Insufficient candlesticks => need {needed}, only have {len(df_klines)} => HOLD")
-        return "HOLD"
+        self.strategy_name = strategy_name
+        # 2) Optional callback
+        self.on_signal = on_signal or (lambda *_: None)
+        self.interval = interval_seconds
+        self.stop_event = threading.Event()
+        self.daemon = True
 
-    # 4) Prepare DataFrame
-    df = df_klines.rename(columns={
-        "open_time": "date",
-        "high": "high_usd",
-        "low": "low_usd",
-        "close": "closing_price_usd"
-    }).sort_values("date").reset_index(drop=True)
+        # 3) Client injection for tests
+        self._client: Optional[Client] = client
 
-    # 5) Calculate MACD and signal
-    df["ema_fast"] = df["closing_price_usd"].ewm(span=fast, adjust=False).mean()
-    df["ema_slow"] = df["closing_price_usd"].ewm(span=slow, adjust=False).mean()
-    df["macd"] = df["ema_fast"] - df["ema_slow"]
-    df["signal"] = df["macd"].ewm(span=signal_p, adjust=False).mean()
+    @property
+    def client(self) -> Client:
+        """
+        Lazily connect to Binance production and cache the client.
+        """
+        if self._client is None:
+            try:
+                self._client = _connect_client()
+            except Exception as e:
+                self.logger.error("Error connecting to Binance: %s", e, exc_info=True)
+                raise
+        return self._client
 
-    if pd.isna(df["macd"].iloc[-1]) or pd.isna(df["signal"].iloc[-1]):
-        logger.warning("(MACD) MACD or signal is NaN => HOLD")
-        return "HOLD"
+    def run(self):
+        self.logger.info("'%s' started; interval=%ss", self.strategy_name, self.interval)
+        while not self.stop_event.is_set():
+            try:
+                # Fetch market data
+                df = _fetch_klines(self.client)
+                # Compute signal
+                params_dump = self.params.model_dump()
+                signal = run_strategy("", params_dump)
+                self.logger.info("Signal => %s", signal)
+                # Emit callback
+                self.on_signal(self.strategy_name, params_dump, signal)
 
-    # 6) Check for crossovers
-    prev_macd = df["macd"].iloc[-2]
-    prev_signal = df["signal"].iloc[-2]
-    last_macd = df["macd"].iloc[-1]
-    last_signal = df["signal"].iloc[-1]
+            except BinanceAPIException as e:
+                self.logger.warning("Binance API error: %s", e)
+            except ValueError as e:
+                self.logger.warning("Data fetch error: %s; skipping cycle.", e)
+            except Exception:
+                self.logger.exception("Unexpected error in loop")
 
-    logger.debug(
-        f"(MACD) prev_macd={prev_macd}, prev_signal={prev_signal}, "
-        f"last_macd={last_macd}, last_signal={last_signal}"
-    )
+            # Wait for next cycle, allowing early wake on stop
+            self.stop_event.wait(self.interval)
 
-    # 7) Decision rules
-    if prev_macd < prev_signal and last_macd > last_signal:
-        logger.info("(MACD) BUY => MACD crosses above signal.")
-        return "BUY"
-    elif prev_macd > prev_signal and last_macd < last_signal:
-        logger.info("(MACD) SELL => MACD crosses below signal.")
-        return "SELL"
-    else:
-        logger.info("(MACD) HOLD => no MACD-signal crossover.")
-        return "HOLD"
+        self.logger.info("'%s' stopped.", self.strategy_name)
+
+    def stop(self, timeout: Optional[float] = None) -> None:
+        """
+        Signal the thread to stop and optionally wait for it to finish.
+        """
+        self.stop_event.set()
+        if timeout is not None:
+            self.join(timeout)

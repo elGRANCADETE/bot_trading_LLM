@@ -1,235 +1,237 @@
 # tfg_bot_trading/orchestrator.py
 
+from __future__ import annotations
+
+# ─── Load environment variables from .env ────────────────────────────────
+from dotenv import load_dotenv
+
+load_dotenv()  # Imports all VAR=VAL from your .env into os.environ before using them
+
+import asyncio
+import json
 import logging
-import time
-import os
 import signal
 import sys
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Callable
+from functools import partial
 
-# Import project modules
 from data_collector.main import run_data_collector
-from news_collector.main import run_news_collector
-from executor.trader_executor import (
-    load_position_state,
-    save_position_state,
-    process_multiple_decisions
-)
-from executor.binance_api import (
-    connect_binance_testnet,
-    cancel_all_open_orders
-)
 from decision_llm.main import run_decision
-
-# Import the StrategyManager (which contains StrategyRunner and make_strategy_id)
-from executor.strategy_manager import StrategyManager
-
-# Import the normalization function for actions
+from executor.binance_api import cancel_all_open_orders, connect_binance
 from executor.normalization import normalize_action
+from executor.strategy_manager import StrategyManager
+from executor.order_executor import (
+    load_position_state,
+    process_multiple_decisions,
+    save_position_state,
+    _get_asset_free_balance,
+)
+from news_collector.main import run_news_collector
+from remote_control import run_telegram_bot
 
-# Logging configuration
+from telegram import Bot
+from remote_control.config import AUTHORIZED_USERS, settings
+from remote_control.utils import PROMPT_FILE, RAW_FILE, PROCESSED_FILE
+
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Global variables
-client = None  # Global connection to Binance
-SYMBOL = "BTCUSDT"
-strategy_manager = StrategyManager()  # Instance of the strategy manager
 
-def clear_processed_output():
-    """
-    Clears the processed_output.json file by deleting it.
-    This ensures that when the program restarts after a long pause, the LLM does not
-    receive outdated decision context.
-    """
-    # Build the absolute path to processed_output.json
-    # Assuming processed_output.json is located in tfg_bot_trading/decision_llm/output/
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    processed_output_path = os.path.join(base_dir, "decision_llm", "output", "processed_output.json")
-    if os.path.exists(processed_output_path):
-        try:
-            os.remove(processed_output_path)
-            logging.info("Cleared processed_output.json upon exit.")
-        except Exception as e:
-            logging.error(f"Error clearing processed_output.json: {e}")
+# ─── Globals ──────────────────────────────────────────────────────────────────
+CLIENT: Optional[Any] = None            # Binance test-net REST client
+SYMBOL = "BTCUSDT"                      # Trading pair
+strategy_manager = StrategyManager()
 
-def handle_exit(signum, frame):
-    """
-    Handles the interruption signal (CTRL+C / SIGTERM):
-      - Cancels open orders.
-      - Stops all strategy threads.
-      - Clears the processed_output.json file.
-      - Exits the program.
-    """
-    global client
-    logging.info("Interruption signal => canceling orders and exiting.")
-    if client:
-        cancel_all_open_orders(client, SYMBOL)
-    # Stop all strategies
-    strategy_manager.stop_all()
-    # Clear the previous decision file to avoid sending outdated context next time
-    clear_processed_output()
-    sys.exit(0)
 
-def main_loop():
-    global client
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+def _processed_path() -> Path:
+    """Return path to LLM processed output file."""
+    return Path(__file__).parent / "decision_llm" / "output" / "processed_output.json"
 
-    # 1) Connect to Binance Testnet
+def _clear_processed_output() -> None:
+    """Delete processed_output.json so the next run starts “clean”."""
     try:
-        client = connect_binance_testnet()
-    except Exception as e:
-        logging.error(f"Error connecting to testnet: {e}")
-        sys.exit(1)
+        _processed_path().unlink(missing_ok=True)
+        logger.info("Cleared processed_output.json")
+    except Exception as exc:  # pragma: no cover
+        logger.error("Failed to delete processed_output.json: %s", exc, exc_info=True)
 
-    # Set up signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, handle_exit)
-    signal.signal(signal.SIGTERM, handle_exit)
+def _exit_handler(shutdown_event: asyncio.Event,
+                  signum: int | None = None,
+                  frame: object | None = None) -> None:
+    """Graceful shutdown on SIGINT/SIGTERM or /stop → YES."""
+    logger.info("Shutdown (%s), cancelling…", signum)
+    strategy_manager.stop_all()
+    if CLIENT:
+        cancel_all_open_orders(CLIENT, SYMBOL)
+    _clear_processed_output()
+    shutdown_event.set()
 
-    cycle_count = 0
-    old_news_text = "No news yet."
-    current_pos = None  # Current position (loaded from file if exists)
+
+# ─── Core loop ────────────────────────────────────────────────────────────────
+async def _cycle_loop(shutdown_event: asyncio.Event) -> None:
+    """Run one 4-hour cycle indefinitely."""
+    global CLIENT
+    # Connect once
+    CLIENT = connect_binance()
+    cycle = 0
+    last_news = "No news yet."
 
     while True:
-        cycle_count += 1
-        logging.info(f"=== Starting 4h cycle #{cycle_count} ===")
+        cycle += 1
+        logger.info("─" * 10 + f" 4-hour cycle #{cycle} ")
 
-        # Load the saved position (if exists) and discard it if it is over 4 hours old
-        current_pos = load_position_state()
-        if current_pos and "timestamp" in current_pos:
-            now = datetime.now(timezone.utc)
-            delta_hrs = (now - current_pos["timestamp"]).total_seconds() / 3600.0
-            if delta_hrs > 4:
-                logging.info("The position is over 4 hours old => invalidating.")
-                current_pos = None
-                if os.path.exists("position_state.json"):
-                    os.remove("position_state.json")
+        # Fetch dynamic wallet balances
+        usdt_balance = _get_asset_free_balance(CLIENT, "USDT")
+        btc_balance = _get_asset_free_balance(CLIENT, "BTC")
+        wallet_balances: Dict[str, float] = {"BTC": btc_balance, "USDT": usdt_balance}
 
-        # Collect market data
-        try:
-            data_json = run_data_collector()
-            if not data_json or data_json == "{}":
-                raise ValueError("Empty market data.")
-        except Exception as e:
-            logging.error(f"Error in data_collector: {e}")
+        # Current position (invalidate if >4 h old)
+        pos = load_position_state()
+        if pos and (datetime.now(timezone.utc) - pos["timestamp"]).total_seconds() > 4 * 3600:
+            pos = None
+            Path("position_state.json").unlink(missing_ok=True)
+
+        # Market data
+        data_json = run_data_collector()
+        if data_json == "{}":
+            logger.error("Data-collector returned empty JSON; aborting.")
             sys.exit(1)
 
-        # Collect news every 12 hours (every 3 cycles, as each cycle is 4 hours)
-        if (cycle_count % 3) == 1:
-            try:
-                logging.info("Updating news (every 12h).")
-                old_news_text = run_news_collector()
-                if not old_news_text:
-                    raise ValueError("Empty news text.")
-            except Exception as e:
-                logging.error(f"Error in news_collector: {e}")
-                sys.exit(1)
-        else:
-            logging.info("No news collected this cycle.")
-        news_text = old_news_text
-
-        # Determine hours since the last position
-        hours_since_pos = None
-        if current_pos and "timestamp" in current_pos:
-            now = datetime.now(timezone.utc)
-            hours_since_pos = (now - current_pos["timestamp"]).total_seconds() / 3600.0
-
-        # Invoke the LLM to get decisions based on market data, news, wallet balances, and previous position
+        # Extract current price for computing sizes
         try:
-            wallet_balances = {"BTC": 1.05, "USDT": 5643.658}
-            current_positions_list = [current_pos] if current_pos else []
-            decisions = run_decision(
-                data_json=data_json,
-                news_text=news_text,
-                wallet_balances=wallet_balances,
-                current_positions=current_positions_list,
-                hours_since_last_trade=hours_since_pos
-            )
-        except Exception as e:
-            logging.error(f"Error obtaining decisions from the LLM: {e}")
-            sys.exit(1)
+            current_price = float(json.loads(data_json)["real_time_data"]["current_price_usd"])
+        except Exception:
+            current_price = 0.0
 
-        if not decisions:
-            logging.info("LLM returned nothing => default HOLD.")
-            decisions = [{"action": "HOLD"}]
-        else:
-            # Summarize LLM decisions for logging
-            decision_summary = []
-            for d in decisions:
-                action = d.get("action", "HOLD")
-                if action == "DIRECT_ORDER":
-                    side = d.get("side", "")
-                    size = d.get("size", "")
-                    asset = d.get("asset", "")
-                    decision_summary.append(f"Order {side} {size} {asset}")
-                elif action == "STRATEGY":
-                    decision_summary.append(f"Strategy {d.get('strategy_name','')}")
-                else:
-                    decision_summary.append(action)
-            logging.info(f"LLM => {len(decisions)} decision(s): {', '.join(decision_summary)}")
+        # Record this cycle’s total wallet value in the shared StrategyManager ───
+        current_total = usdt_balance + btc_balance * current_price
+        # on first run, set the “since start” baseline
+        if strategy_manager.initial_balance is None:
+            strategy_manager.initial_balance = current_total
+        # append (UTC timestamp, total) to its history
+        strategy_manager.balance_history.append((
+            datetime.now(timezone.utc),
+            btc_balance,
+            usdt_balance,
+            current_total,
+        ))
 
-        # Separate direct orders from strategy decisions
-        direct_orders = []
-        new_strategy_ids = []
-        seen_strategy_ids = set()
+        # News (every 3rd iteration → 12 h)
+        if cycle % 3 == 1:
+            last_news = run_news_collector() or last_news
+        news_text = last_news
+
+        # Hours since last trade
+        hours_since = None
+        if pos:
+            hours_since = (datetime.now(timezone.utc) - pos["timestamp"]).total_seconds() / 3600.0
+
+        # 1) Call LLM
+        decisions = run_decision(
+            data_json=data_json,
+            news_text=news_text,
+            wallet_balances=wallet_balances,
+            current_positions=[pos] if pos else [],
+            hours_since_last_trade=hours_since,
+        ) or [{"action": "HOLD"}]
+
+        # 2) Validate and resolve size_pct into absolute size
+        for dec in decisions:
+            pct = dec.get("size_pct")
+            if pct is not None:
+                if not 0.0 <= pct <= 1.0:
+                    logger.warning("size_pct out of range, forcing HOLD: %s", dec)
+                    dec["action"] = "HOLD"
+                    dec.pop("size_pct", None)
+                    continue
+                if dec.get("action") == "DIRECT_ORDER":
+                    side = dec.get("side", "").upper()
+                    if side == "BUY":
+                        dec["size"] = (usdt_balance * pct) / max(current_price, 1e-8)
+                    elif side == "SELL":
+                        dec["size"] = btc_balance * pct
+                elif dec.get("action") == "STRATEGY":
+                    dec.setdefault("params", {})["size_pct"] = pct
+                dec.pop("size_pct", None)
+
+        # 3) Split decisions
+        direct_orders: List[Dict[str, Any]] = []
+        new_strategy_ids: List[str] = []
+        seen: set[str] = set()
 
         for dec in decisions:
-            # Normalize the action value (e.g., "__STRATEGY" will become "STRATEGY")
-            action = dec.get("action", "HOLD")
-            normalized_action = normalize_action(action)
-            dec["action"] = normalized_action
-
-            if normalized_action == "STRATEGY":
+            dec["action"] = normalize_action(dec.get("action", "HOLD"))
+            if dec["action"] == "STRATEGY":
                 sname = dec.get("strategy_name", "")
-                sparams = dec.get("params", {})
-                sid = f"{sname}|{'_'.join(f'{k}-{v}' for k, v in sorted(sparams.items()))}"
-                if sid in seen_strategy_ids:
-                    logging.info(f"Duplicate strategy decision {sid} detected; skipping.")
-                    continue
-                seen_strategy_ids.add(sid)
-                new_strategy_ids.append(sid)
-                strategy_manager.start_strategy(sname, sparams, data_json)
-            elif normalized_action in ("DIRECT_ORDER", "HOLD", "CLOSE_POSITION", "CANCEL_ORDER"):
-                direct_orders.append(dec)
+                params = dec.get("params", {})
+                sid = f"{sname}|{'_'.join(f'{k}-{v}' for k, v in sorted(params.items()))}"
+                if sid not in seen:
+                    seen.add(sid)
+                    new_strategy_ids.append(sid)
+                    strategy_manager.start_strategy(sname, params, data_json)
             else:
-                logging.info(f"Unknown action: {normalized_action}, ignoring.")
+                direct_orders.append(dec)
 
-        # Process direct orders (BUY/SELL, etc.)
+        # 4) Execute direct orders
         if direct_orders:
-            try:
-                new_pos = process_multiple_decisions(direct_orders, data_json, current_pos, client)
-                if new_pos != current_pos:
-                    current_pos = new_pos
-                    if current_pos:
-                        save_position_state(current_pos)
-                    else:
-                        if os.path.exists("position_state.json"):
-                            os.remove("position_state.json")
-                logging.info(f"Position after direct_orders => {current_pos}")
-            except Exception as e:
-                logging.error(f"Error in process_multiple_decisions: {e}")
+            new_pos = process_multiple_decisions(direct_orders, data_json, CLIENT, pos)
+            if new_pos != pos:
+                if new_pos:
+                    save_position_state(new_pos)
+                else:
+                    Path("position_state.json").unlink(missing_ok=True)
 
-        # Stop strategies that are no longer needed
+        # 5) Refresh strategies
         strategy_manager.update_strategies(new_strategy_ids)
 
-        # Final summary for this cycle
-        logging.info("=== End of cycle summary ===")
-        logging.info(f"Direct orders processed: {len(direct_orders)}")
-        logging.info(f"New strategies started: {len(new_strategy_ids)}")
-        logging.info(f"Current position: {current_pos if current_pos else 'None'}")
+        # 6) Send LLM artefacts
+        bot = Bot(token=settings.telegram_token)
+        for uid in AUTHORIZED_USERS:
+            for path in (PROMPT_FILE, RAW_FILE, PROCESSED_FILE):
+                if path.exists():
+                    with open(path, "rb") as f:
+                        await bot.send_document(chat_id=uid, document=f, filename=path.name)
+        logger.info("Waiting up to 4h or until shutdown…")
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=4*3600)
+        except asyncio.TimeoutError:
+            pass
+        else:
+            logger.info("Shutdown event received, exiting cycle loop.")
+            break
 
-        logging.info("Sleeping for 4 hours...\n")
-        time.sleep(4 * 3600)
+async def _run_telegram(shutdown_event: asyncio.Event, exit_cb: Callable) -> None:
+    await run_telegram_bot(
+        strategy_manager=strategy_manager,
+        exit_callback=exit_cb,
+        shutdown_event=shutdown_event,
+    )
 
-def main():
-    logging.info("Trading Bot: starting main loop (every 4h).")
+async def main_async() -> None:
+    """Entry point - starts the trading loop and the Telegram bot concurrently."""
+    loop = asyncio.get_running_loop()
+    shutdown_event = asyncio.Event()
+    exit_cb = partial(_exit_handler, shutdown_event)
     try:
-        main_loop()
-    finally:
-        logging.info("Exiting... Stopping strategy threads.")
-        strategy_manager.stop_all()
-        # Clear processed_output.json on exit to avoid using outdated context in future runs
-        clear_processed_output()
-        logging.info("Bot terminated.")
+        loop.add_signal_handler(signal.SIGINT,  exit_cb)
+        loop.add_signal_handler(signal.SIGTERM, exit_cb)
+    except NotImplementedError:
+        # On Windows / ProactorLoop, signal handlers are unavailable; we will fall back to KeyboardInterrupt
+        pass
+
+    try:
+        await asyncio.gather(_cycle_loop(shutdown_event), _run_telegram(shutdown_event, exit_cb))
+    except asyncio.CancelledError:
+        logger.info("Tasks cancelled, exiting...")
+        return
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        sys.exit(0)

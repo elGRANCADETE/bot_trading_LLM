@@ -1,99 +1,124 @@
-# tfg_bot_trading/executor/strategies/bollinger/bollinger.py
+# tfg_bot_trading/executor/strategies/bollinger/bollinger_runner.py
 
-import json
+from __future__ import annotations
+import threading
 import logging
+import time
 import pandas as pd
 import numpy as np
+from typing import Dict, Any, Literal
 
 from binance.client import Client
-# Ensure that binance_api.py includes:
-#   connect_binance_production() and fetch_klines_df(...)
-from executor.binance_api import connect_binance_production, fetch_klines_df
+from executor.binance_api import fetch_klines_df, connect_binance_production
+from pydantic import BaseModel, Field, ValidationError
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-if not logger.hasHandlers():
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+logger = logging.getLogger("BollingerRunner")
 
-def run_strategy(_ignored_data_json: str, params: dict) -> str:
+# ─── Strategy Params Model ────────────────────────────────────────────────────
+class BollingerParams(BaseModel):
+    period: int = Field(20, ge=1)
+    stddev: float = Field(2.0, ge=0.0)
+
+# ─── Data Fetch with Retry ────────────────────────────────────────────────────
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def _fetch_data(client: Client) -> pd.DataFrame:
+    df = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
+    if df.empty:
+        raise ValueError("No kline data returned")
+    return df
+
+# ─── Bollinger Runner Thread ─────────────────────────────────────────────────
+class BollingerRunner(threading.Thread):
     """
-    Bollinger Bands strategy that ignores the data_json and fetches candlesticks directly
-    from Binance Production.
-
-    Expected parameters in 'params':
-      - period (int): window size for Bollinger calculation (default 20)
-      - stddev (float): number of standard deviations (default 2.0)
-
-    Logic:
-      1) Connect to Binance Production.
-      2) Download ~100 days of 4h candlesticks for BTCUSDT.
-      3) Calculate Bollinger bands: MA ± stddev * STD.
-      4) If the price closes above the upper band => SELL
-         If the price closes below the lower band => BUY
-         Otherwise => HOLD
+    Thread that continuously runs the Bollinger Bands strategy.
+    On each interval it fetches data, computes signal and logs it.
     """
-    period = params.get("period", 20)
-    stddev = params.get("stddev", 2.0)
 
-    # 1) Connection to Binance Production
-    try:
-        client = connect_binance_production()
-    except Exception as e:
-        logger.error(f"(Bollinger) Error connecting to Binance Production: {e}")
-        return "HOLD"
+    def __init__(
+        self,
+        strategy_params: Dict[str, Any],
+        interval_seconds: float = 60.0,
+        *args,
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.interval = interval_seconds
+        self.stop_event = threading.Event()
+        self.daemon = True
 
-    # 2) Download ~100 days of 4h candlesticks
-    try:
-        df_klines = fetch_klines_df(client, "BTCUSDT", Client.KLINE_INTERVAL_4HOUR, "100 days ago UTC")
-        if df_klines.empty:
-            logger.warning("(Bollinger) No candlesticks obtained => HOLD")
+        # Validate params once at startup
+        try:
+            self.params = BollingerParams(**strategy_params)
+        except ValidationError as e:
+            logger.error("Invalid Bollinger params: %s", e)
+            raise
+
+        # Prepare client connection
+        try:
+            self.client = connect_binance_production()
+        except Exception as e:
+            logger.error("Error connecting to Binance Production: %s", e)
+            raise
+
+        logger.info("BollingerRunner initialized with params=%s", self.params.dict())
+
+    def run(self):
+        logger.info("BollingerRunner thread started.")
+        while not self.stop_event.is_set():
+            try:
+                df = _fetch_data(self.client)
+                signal = self._compute_signal(df)
+                logger.info("Bollinger signal => %s", signal)
+                # TODO: Hook in order execution if needed
+            except Exception as e:
+                logger.error("Error in Bollinger loop: %s", e)
+            finally:
+                time.sleep(self.interval)
+        logger.info("BollingerRunner thread stopped.")
+
+    def stop(self):
+        """Signal the thread to stop after current iteration."""
+        self.stop_event.set()
+
+    # ─── Core Signal Computation ───────────────────────────────────────────────
+    def _compute_signal(self, df_klines: pd.DataFrame) -> Literal["BUY", "SELL", "HOLD"]:
+        """
+        Compute BUY/SELL/HOLD based on Bollinger Bands:
+        - Close > upper → SELL
+        - Close < lower → BUY
+        - Otherwise → HOLD
+        """
+        p = self.params
+        df = (
+            df_klines
+            .rename(columns={"open_time":"date","high":"high_usd","low":"low_usd","close":"closing_price_usd"})
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+
+        if len(df) < p.period:
+            logger.warning("Insufficient candles (%d) for period %d → HOLD", len(df), p.period)
             return "HOLD"
-    except Exception as e:
-        logger.error(f"(Bollinger) Error downloading candlesticks: {e}")
-        return "HOLD"
 
-    if len(df_klines) < period:
-        logger.warning(f"(Bollinger) Insufficient candlesticks => need {period}, only have {len(df_klines)} => HOLD")
-        return "HOLD"
+        roll = df["closing_price_usd"].rolling(window=p.period, min_periods=p.period)
+        ma = roll.mean()
+        sd = roll.std()
 
-    # 3) Convert to DataFrame with relevant columns
-    df = df_klines.rename(columns={
-        "open_time": "date",
-        "high": "high_usd",
-        "low": "low_usd",
-        "close": "closing_price_usd"
-    }).sort_values("date").reset_index(drop=True)
+        last_ma = ma.iat[-1]
+        last_sd = sd.iat[-1]
+        if np.isnan(last_ma) or np.isnan(last_sd):
+            logger.warning("Rolling MA/STD is NaN → HOLD")
+            return "HOLD"
 
-    # 4) Calculation of Bollinger bands
-    df["ma"] = df["closing_price_usd"].rolling(window=period, min_periods=period).mean()
-    df["std"] = df["closing_price_usd"].rolling(window=period, min_periods=period).std()
+        upper = last_ma + p.stddev * last_sd
+        lower = last_ma - p.stddev * last_sd
+        close = df["closing_price_usd"].iat[-1]
 
-    # Validate that there is data in the last row
-    if pd.isna(df["ma"].iloc[-1]) or pd.isna(df["std"].iloc[-1]):
-        logger.warning("(Bollinger) Insufficient data in the last row => HOLD")
-        return "HOLD"
+        logger.debug("Close=%.2f, Upper=%.2f, Lower=%.2f", close, upper, lower)
 
-    df["upper"] = df["ma"] + (stddev * df["std"])
-    df["lower"] = df["ma"] - (stddev * df["std"])
-
-    # Last value of close, upper and lower
-    last_close = float(df["closing_price_usd"].iloc[-1])
-    last_upper = float(df["upper"].iloc[-1])
-    last_lower = float(df["lower"].iloc[-1])
-
-    logger.debug(f"(Bollinger) Last close: {last_close}, upper: {last_upper}, lower: {last_lower}")
-
-    # 5) Decide the signal
-    if last_close > last_upper:
-        logger.info("(Bollinger) SELL => price above the upper band")
-        return "SELL"
-    elif last_close < last_lower:
-        logger.info("(Bollinger) BUY => price below the lower band")
-        return "BUY"
-    else:
-        logger.info("(Bollinger) HOLD => price within the bands")
+        if close > upper:
+            return "SELL"
+        if close < lower:
+            return "BUY"
         return "HOLD"

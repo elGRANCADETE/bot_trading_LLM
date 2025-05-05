@@ -1,23 +1,20 @@
 [
   {
-    "analysis": "Price remains above upper Bollinger Band with Stochastic K% at 86.99 (overbought). Partial profit-taking advised to manage risk.",
+    "analysis": "Stochastic Oscillator remains oversold. Bullish sentiment supports accumulation.",
     "action": "DIRECT_ORDER",
-    "side": "SELL",
-    "size": 0.1,
+    "side": "BUY",
+    "size": 0.01,
     "asset": "BTC"
   },
   {
-    "analysis": "Implementing ATR-based stop strategy to protect against volatility spikes",
+    "analysis": "Maintain Stochastic strategy for oversold signals.",
     "action": "STRATEGY",
-    "strategy_name": "ATR Stop",
+    "strategy_name": "Stochastic",
     "params": {
-      "period": 14,
-      "multiplier": 2.0,
-      "consecutive_candles": 2,
-      "atr_min_threshold": 0.0,
-      "lock_candles": 2,
-      "gap_threshold": 0.03,
-      "use_leading_line": false
+      "k_period": 14,
+      "d_period": 3,
+      "overbought": 80,
+      "oversold": 20
     }
   }
 ]
