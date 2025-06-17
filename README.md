@@ -1,171 +1,167 @@
-# 🤖 tfgBotTrading - Sistema Automatizado de Trading
+````markdown
+<!-- Proyecto: tfgBotTrading -->
 
-![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+# 🤖 tfgBotTrading
+**Sistema Automatizado de Trading con Python**
 
-tfgBotTrading is an automated trading system written in Python. It integrates technical analysis, real-time news processing, and decision-making models based on large language models (LLMs) to execute trading orders across multiple strategies on Binance. Additionally, it features a Telegram module for remote monitoring, command execution, and alert notifications using an asynchronous API.
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 
+---
 
-## Disclaimer
+**tfgBotTrading** es un sistema de trading automatizado que combina análisis técnico, procesamiento de noticias en tiempo real y modelos de toma de decisiones basados en LLMs (modelos de lenguaje). Permite ejecutar órdenes en Binance según múltiples estrategias, y ofrece un módulo de Telegram para _monitoring_ remoto, ejecución de comandos y alertas.
 
-This software is provided for educational purposes only. Do not invest money that you cannot afford to lose. USE IT AT YOUR OWN RISK. The author assumes no responsibility for any losses incurred through trading activities.
-It is highly recommended that you have a solid understanding of Python programming and financial markets before using this bot with real money.
-Always start in simulation mode (Paper/Dry Run) and thoroughly understand how the bot works before risking actual capital.
+> ⚠️ **Disclaimer**: Software solo para fines educativos. No inviertas dinero que no puedas permitirte perder. Úsalo bajo tu propio riesgo.
 
+---
 
-## 🚀 **Tabla de Contenidos**
-- [Installation](#Installation)
-- [Project Structure](#Project-Structure)
-- [Configuration](#Configuration)
-- [Usage](#Usage)
-- [Dependencies](#Dependencies)
-- [Contribution](#Contribution)
-- [License](#License)
+## 📋 Tabla de Contenidos
+1. [🏗️ Instalación](#-instalación)
+2. [🗂 Estructura del Proyecto](#-estructura-del-proyecto)
+3. [⚙️ Configuración](#️-configuración)
+4. [🚀 Uso](#-uso)
+5. [🔗 Dependencias](#-dependencias)
+6. [🤝 Contribución](#-contribución)
+7. [📜 Licencia](#-licencia)
 
+---
 
-## 📦 **Installation**
-Clone the repository and set up your environment:
-
-git clone https://github.com/your-username/tfgBotTrading.git
+## 🏗️ Instalación
+```bash
+git clone https://github.com/tu-usuario/tfgBotTrading.git
 cd tfgBotTrading
+python -m venv venv      # Crear entorno virtual (opcional)
+source venv/bin/activate # Linux/macOS
+venv\\Scripts\\activate  # Windows
 pip install -e .
+````
 
-**Note:**
-TA‑Lib must be installed manually on some systems (e.g., Windows with Python 3.12 or higher). See the TA‑Lib Installation Guide below.
+> **Nota:** En algunos sistemas (Windows Python³¹²+) TA‑Lib requiere instalación manual. Ver sección [TA‑Lib Installation Guide](#ta-lib-installation-guide).
 
+---
 
-## 🏗️ **Project Structure**
+## 🗂 Estructura del Proyecto
+
+```text
 tfg_bot_trading/
-├── orchestrator.py               # Main entry‑point: pulls data, calls the LLM, routes orders & strategies
-├── data_collector/               # Market‑data acquisition and analytics
-│   ├── config.py                 # Exchange connections & Pydantic settings
-│   ├── main.py                   # Orchestrates get_data ▸ compile_data ▸ run_data_collector
-│   ├── data_fetcher.py           # fetch_ohlcv_data, latest price, volumes, %‑changes, …
-│   ├── indicators.py             # Technical indicators (SMA, EMA, MACD, RSI, etc.)
-│   ├── analysis.py               # Pattern detection, signal generation, robust Ichimoku
-│   ├── output.py                 # Final transforms: real‑time snapshot, history, JSON export
-│   └── utils/
-│       └── helpers.py            # Small helpers (normalisation, conversions, …)
-├── news_collector/               # Crypto‑news collection & formatting
-│   ├── config.py                 # Pydantic validation
-│   ├── client.py                 # HTTP session + Perplexity API calls
-│   ├── formatter.py              # Prompt builder – dashed sections
-│   └── main.py                   # Orchestrator that uses client & formatter
-├── decision_llm/                 # Let the LLM decide what to do
-│   ├── config.py                 # Runtime settings & response schema
-│   ├── llm.py                    # OpenRouter wrapper + prompt builders
-│   ├── processor.py              # Safe JSON extraction & arithmetic evaluation
-│   ├── runner.py                 # run_decision orchestrator
-│   ├── input/                    # Prompts sent to the LLM (for audit)
-│   └── output/                   # raw_output.txt and processed_output.json
-├── executor/                     # Order execution & live strategy threads
-│   ├── trader_executor.py        # Spot/Futures order logic + position handling
-│   ├── binance_api.py            # Testnet / production API helper
-│   ├── normalization.py          # Normalises LLM actions & params
-│   ├── strategy_manager.py       # Thread lifecycle for strategies
-│   └── strategies/               # Concrete strategy implementations
-│       ├── atr_stop/             # ATR Stop
-│       ├── bollinger/            # Bollinger Bands
-│       ├── ichimoku/             # Ichimoku Cloud
-│       ├── ma_crossover/         # Moving‑average crossover
-│       ├── macd/                 # MACD
-│       ├── range_trading/        # Range trading
-│       ├── rsi/                  # RSI
-│       └── stochastic/           # Stochastic oscillator
-└── remote_control/               # Telegram remote control & reporting
-    ├── config.py                 # Pydantic settings (bot token, allowed users)
-    ├── bot_app.py                # creates and returns the PTB Application
-    ├── handlers.py               # all CommandHandler / MessageHandler
-    └── utils.py                  # pure helpers (pct_change, summarise_balance, …)
+├── orchestrator.py           # Entrada principal: recoge datos, llama al LLM, gestiona órdenes
+├── data_collector/           # Captura y análisis de datos de mercado
+│   ├── config.py             # Ajustes de conexión (Pydantic)
+│   ├── main.py               # Orquestador del módulo de datos
+│   ├── data_fetcher.py       # Funciones de obtención de OHLCV, precios, volúmenes…
+│   ├── indicators.py         # Indicadores técnicos (SMA, EMA, RSI, etc.)
+│   ├── analysis.py           # Detección de patrones y señales
+│   └── output.py             # Exportación de snapshots e historial
+├── news_collector/           # Recopilación y formateo de noticias cripto
+├── decision_llm/             # Toma de decisiones con LLM (prompt + respuesta)
+├── executor/                 # Ejecución de órdenes y gestión de estrategias
+└── remote_control/           # Módulo Telegram para control y notificaciones
+```
 
+Cada carpeta contiene un `README.md` específico con detalles del submódulo.
 
-Each strategy is organized into its own folder to facilitate maintenance and scalability.
+---
 
+## ⚙️ Configuración
 
-# ⚙️ **Configuration**
-# Binance API Credentials
-BINANCE_API_KEY=your_api_key
-BINANCE_API_SECRET=your_api_secret
+Define las siguientes variables de entorno en un archivo `.env`:
 
-# News API Key (for Perplexity or similar)
-AI_NEWS_API_KEY=your_news_api_key
+```dotenv
+# Binance API
+BINANCE_API_KEY=tu_api_key
+BINANCE_API_SECRET=tu_api_secret
 
-# OpenAI API Key (for LLM-based decision making)
-OPENAI_API_KEY=your_openai_api_key
+# News API (Perplexity u otro)
+AI_NEWS_API_KEY=tu_news_api_key
 
-# Telegram Bot Token
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+# OpenAI (LLM decisions)
+OPENAI_API_KEY=tu_openai_api_key
 
-These keys are necessary for integration with Binance, Perplexity AI, and OpenAI.
+# Telegram Bot
+TELEGRAM_BOT_TOKEN=tu_telegram_token
+```
 
+> **Importante:** Comprende bien el funcionamiento en modo simulación (Paper/Dry Run) antes de usar capital real.
 
-# 🖥️ **Usage**
-## Run the Entire System
+---
+
+## 🚀 Uso
+
+**1. Ejecutar todo el sistema**
+
+```bash
 python orchestrator.py
-py orchestrator.py
+```
 
-## Ejecutar módulos individualmente
+**2. Ejecutar módulos por separado**
+
+```bash
 python -m data_collector.main
 python -m news_collector.main
-python remote_control/telegram_module.py
+python -m remote_control.bot_app
+```
 
-py -m data_collector.main
-py -m news_collector.main
-py remote_control/telegram_module.py
+---
 
-# 📚 **Dependencies**
-All required dependencies are managed via `setup.py`.
+## 🔗 Dependencias
 
-These include:
+Gestionadas en `setup.py`:
 
-- Exchange Integration:`ccxt`, `python-binance`
-- Data & Technical Analysis:`pandas`, `numpy`, `tabulate`, `requests`
-- Environment Management:`python-dotenv`
-- LLM-based Decision Making: `openai`
-- Telegram Integration: `python-telegram-bot`
-- Task Scheduling:`apscheduler`
+* `ccxt`, `python-binance`
+* `pandas`, `numpy`, `requests`
+* `python-dotenv`
+* `openai`
+* `python-telegram-bot`
+* `apscheduler`
 
-> **Note:** TA‑Lib must be installed manually on some systems like Windows with Python 3.12 or higher. See the TA‑Lib Installation Guide below.
+<details>
+<summary><strong>TA‑Lib Installation Guide</strong></summary>
 
-<details> <summary><strong>TA-Lib Installation Guide (click to expand)</strong></summary>
+### Windows (Python ≥3.12)
 
-✅ Windows (Python 3.12+ or 3.13)
-TA-Lib requires a manual installation using a precompiled wheel:
+1. Descarga el `.whl` de [https://github.com/mrjbq7/ta-lib/releases](https://github.com/mrjbq7/ta-lib/releases)
+2. Instálalo con:
 
-1. Download the appropriate .whl file from the official release page (https://github.com/mrjbq7/ta-lib/releases/tag/v0.6.3).
-    For Python 3.13 (64-bit), download:
-    ta_lib-0.6.3-cp313-cp313-win_amd64.whl
+   ```bash
+   pip install ta_lib‑0.6.3‑cp313‑cp313‑win_amd64.whl
+   ```
+3. Luego:
 
-2. Open your terminal (PowerShell or CMD) and run:
-    pip install ta_lib-0.6.3-cp313-cp313-win_amd64.
-    
-3. Once installed, you can continue with the rest of the project setup:
-    pip install -e .
+   ```bash
+   pip install -e .
+   ```
 
-🐧 Linux (Debian/Ubuntu)
-    sudo apt-get install -y ta-lib
-    pip install TA-Lib
+### Linux (Debian/Ubuntu)
 
-🍎 macOS (Homebrew)
+```bash
+sudo apt-get install -y ta-lib
+pip install TA-Lib
+```
+
+### macOS (Homebrew)
+
+```bash
 brew install ta-lib
 pip install TA-Lib
+```
+
 </details>
 
+---
 
-# 🤝 **Contribution**
+## 🤝 Contribución
 
-Contributions are welcome! To contribute:
+1. Haz fork del proyecto.
+2. Crea una rama: `git checkout -b feature/nueva-funcionalidad`
+3. Realiza tus cambios y commitea: `git commit -m "Añade mejora X"`
+4. Push y abre un Pull Request.
 
-1. Fork the repository.
-2. Create a feature branch:
-    git checkout -b feature/new-feature
-3. Make your changes:
-    git commit -m 'Add amazing feature'
-4. Push your changes:
-    git push origin feature/new-feature
-5. Open a Pull Request and describe your changes.
+---
 
+## 📜 Licencia
 
-# 📜 **License**
-Distributed under the MIT License.
+Licenciado bajo [MIT License](LICENSE).
+
+```
+```
