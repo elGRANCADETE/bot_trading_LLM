@@ -44,18 +44,47 @@ pip install -e .
 
 ```text
 tfg_bot_trading/
-├── orchestrator.py           # Entrada principal: recoge datos, llama al LLM, gestiona órdenes
-├── data_collector/           # Captura y análisis de datos de mercado
-│   ├── config.py             # Ajustes de conexión (Pydantic)
-│   ├── main.py               # Orquestador del módulo de datos
-│   ├── data_fetcher.py       # Funciones de obtención de OHLCV, precios, volúmenes…
-│   ├── indicators.py         # Indicadores técnicos (SMA, EMA, RSI, etc.)
-│   ├── analysis.py           # Detección de patrones y señales
-│   └── output.py             # Exportación de snapshots e historial
-├── news_collector/           # Recopilación y formateo de noticias cripto
-├── decision_llm/             # Toma de decisiones con LLM (prompt + respuesta)
-├── executor/                 # Ejecución de órdenes y gestión de estrategias
-└── remote_control/           # Módulo Telegram para control y notificaciones
+├── orchestrator.py               # Punto de entrada principal: coordina la recopilación de datos, la toma de decisiones y la ejecución de órdenes
+├── data_collector/               # Módulo de adquisición y análisis de datos de mercado
+│   ├── config.py                 # Configuración de conexiones y ajustes mediante Pydantic
+│   ├── main.py                   # Orquestador de la recopilación y procesamiento de datos
+│   ├── data_fetcher.py           # Obtención de datos OHLCV, precios actuales, volúmenes, etc.
+│   ├── indicators.py             # Cálculo de indicadores técnicos (SMA, EMA, MACD, RSI, etc.)
+│   ├── analysis.py               # Detección de patrones y generación de señales
+│   ├── output.py                 # Transformaciones finales y exportación en formato JSON
+│   └── utils/
+│       └── helpers.py            # Funciones auxiliares (normalización, conversiones, etc.)
+├── news_collector/               # Módulo de recopilación y formato de noticias del mercado
+│   ├── config.py                 # Validación de configuración mediante Pydantic
+│   ├── client.py                 # Sesión HTTP y llamadas a la API de Perplexity
+│   ├── formatter.py              # Construcción de prompts para el análisis de noticias
+│   └── main.py                   # Orquestador que utiliza client y formatter
+├── decision_llm/                 # Módulo de toma de decisiones mediante IA generativa
+│   ├── config.py                 # Configuración de ejecución y esquema de respuestas
+│   ├── llm.py                    # Envoltura de OpenRouter y construcción de prompts
+│   ├── processor.py              # Extracción segura de JSON y evaluación aritmética
+│   ├── runner.py                 # Orquestador de la ejecución de decisiones
+│   ├── input/                    # Prompts enviados a la IA (para auditoría)
+│   └── output/                   # Salidas crudas y procesadas de la IA
+├── executor/                     # Módulo de ejecución de órdenes y estrategias en tiempo real
+│   ├── trader_executor.py        # Lógica de órdenes spot/futuros y manejo de posiciones
+│   ├── binance_api.py            # Ayudante para la API de Binance (testnet/producción)
+│   ├── normalization.py          # Normalización de acciones y parámetros de la IA
+│   ├── strategy_manager.py       # Gestión del ciclo de vida de las estrategias
+│   └── strategies/               # Implementaciones concretas de estrategias
+│       ├── atr_stop/             # Estrategia ATR Stop
+│       ├── bollinger/            # Bandas de Bollinger
+│       ├── ichimoku/             # Nube de Ichimoku
+│       ├── ma_crossover/         # Cruce de medias móviles
+│       ├── macd/                 # MACD
+│       ├── range_trading/        # Trading en rango
+│       ├── rsi/                  # RSI
+│       └── stochastic/           # Oscilador estocástico
+└── remote_control/               # Control remoto y reporte vía Telegram
+    ├── config.py                 # Configuración de Pydantic (token del bot, usuarios autorizados)
+    ├── bot_app.py                # Creación y retorno de la aplicación de Telegram
+    ├── handlers.py               # Manejo de comandos y mensajes
+    └── utils.py                  # Funciones auxiliares (cambio porcentual, resumen de balance, etc.)
 ```
 
 Cada carpeta contiene un `README.md` específico con detalles del submódulo.
